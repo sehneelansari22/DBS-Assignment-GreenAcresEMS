@@ -8,7 +8,7 @@ Database Security assignment (CT069-3-3). This is a redesign of Green Acres Real
 |---|---|
 | Izzah Zulkafli | Property Management Development |
 | Sehneel Ansari | Client Portal Development |
-| Priya Suhuba | Analytics |
+| Sehneel Ansari | Analytics |
 | Imran Amir | Database Administration |
 | Lim Jia Hui | Agent Operations Development |
 
