@@ -1,0 +1,305 @@
+﻿AgentOpsDev,Agents,USER_TABLE,DELETE,DENY
+AgentOpsDev,Agents,USER_TABLE,INSERT,DENY
+AgentOpsDev,Agents,USER_TABLE,SELECT,DENY
+AgentOpsDev,Agents,USER_TABLE,UPDATE,DENY
+AgentOpsDev,sp_AddTransaction,SQL_STORED_PROCEDURE,EXECUTE,GRANT
+AgentOpsDev,sp_GetAgentContactInfo,SQL_STORED_PROCEDURE,EXECUTE,GRANT
+AgentOpsDev,sp_RegisterNewAgent,SQL_STORED_PROCEDURE,EXECUTE,GRANT
+AgentOpsDev,Transactions,USER_TABLE,DELETE,DENY
+AgentOpsDev,Transactions,USER_TABLE,INSERT,DENY
+AgentOpsDev,Transactions,USER_TABLE,SELECT,DENY
+AgentOpsDev,Transactions,USER_TABLE,UPDATE,DENY
+AgentOpsDev,vw_AgentOps_Agents,VIEW,SELECT,GRANT
+AgentOpsDev,vw_AgentOps_Transactions,VIEW,SELECT,GRANT
+AnalyticsTeam,Agents,USER_TABLE,DELETE,DENY
+AnalyticsTeam,Agents,USER_TABLE,INSERT,DENY
+AnalyticsTeam,Agents,USER_TABLE,SELECT,DENY
+AnalyticsTeam,Agents,USER_TABLE,UPDATE,DENY
+AnalyticsTeam,Clients,USER_TABLE,DELETE,DENY
+AnalyticsTeam,Clients,USER_TABLE,INSERT,DENY
+AnalyticsTeam,Clients,USER_TABLE,SELECT,DENY
+AnalyticsTeam,Clients,USER_TABLE,UPDATE,DENY
+AnalyticsTeam,Properties,USER_TABLE,DELETE,DENY
+AnalyticsTeam,Properties,USER_TABLE,INSERT,DENY
+AnalyticsTeam,Properties,USER_TABLE,SELECT,DENY
+AnalyticsTeam,Properties,USER_TABLE,UPDATE,DENY
+AnalyticsTeam,Transactions,USER_TABLE,DELETE,DENY
+AnalyticsTeam,Transactions,USER_TABLE,INSERT,DENY
+AnalyticsTeam,Transactions,USER_TABLE,SELECT,DENY
+AnalyticsTeam,Transactions,USER_TABLE,UPDATE,DENY
+AnalyticsTeam,vw_Analytics_AgentPerformance,VIEW,SELECT,GRANT
+AnalyticsTeam,vw_Analytics_ClientSummary,VIEW,SELECT,GRANT
+AnalyticsTeam,vw_Analytics_MonthlyTransactions,VIEW,SELECT,GRANT
+AnalyticsTeam,vw_Analytics_PropertyMarket,VIEW,SELECT,GRANT
+ClientPortalDev,Clients,USER_TABLE,DELETE,DENY
+ClientPortalDev,Clients,USER_TABLE,INSERT,DENY
+ClientPortalDev,Clients,USER_TABLE,SELECT,DENY
+ClientPortalDev,Clients,USER_TABLE,UPDATE,DENY
+ClientPortalDev,sp_GetClientContactInfo,SQL_STORED_PROCEDURE,EXECUTE,GRANT
+ClientPortalDev,sp_RegisterNewClient,SQL_STORED_PROCEDURE,EXECUTE,GRANT
+ClientPortalDev,vw_ClientPortal_Clients,VIEW,SELECT,GRANT
+DBAdminRole,N/A - Certificate/Key,NULL,CONTROL,GRANT
+DBAdminRole,N/A - Certificate/Key,NULL,UNMASK,GRANT
+DBAdminRole,N/A - Certificate/Key,NULL,VIEW DEFINITION,GRANT
+DBAdminRole,Agents,USER_TABLE,DELETE,GRANT
+DBAdminRole,Agents,USER_TABLE,INSERT,GRANT
+DBAdminRole,Agents,USER_TABLE,SELECT,GRANT
+DBAdminRole,Agents,USER_TABLE,UPDATE,GRANT
+DBAdminRole,AuditLog,USER_TABLE,SELECT,GRANT
+DBAdminRole,Clients,USER_TABLE,DELETE,GRANT
+DBAdminRole,Clients,USER_TABLE,INSERT,GRANT
+DBAdminRole,Clients,USER_TABLE,SELECT,GRANT
+DBAdminRole,Clients,USER_TABLE,UPDATE,GRANT
+DBAdminRole,Departments,USER_TABLE,DELETE,GRANT
+DBAdminRole,Departments,USER_TABLE,INSERT,GRANT
+DBAdminRole,Departments,USER_TABLE,SELECT,GRANT
+DBAdminRole,Departments,USER_TABLE,UPDATE,GRANT
+DBAdminRole,MaintenanceRequests,USER_TABLE,DELETE,GRANT
+DBAdminRole,MaintenanceRequests,USER_TABLE,INSERT,GRANT
+DBAdminRole,MaintenanceRequests,USER_TABLE,SELECT,GRANT
+DBAdminRole,MaintenanceRequests,USER_TABLE,UPDATE,GRANT
+DBAdminRole,Properties,USER_TABLE,DELETE,GRANT
+DBAdminRole,Properties,USER_TABLE,INSERT,GRANT
+DBAdminRole,Properties,USER_TABLE,SELECT,GRANT
+DBAdminRole,Properties,USER_TABLE,UPDATE,GRANT
+DBAdminRole,Transactions,USER_TABLE,DELETE,GRANT
+DBAdminRole,Transactions,USER_TABLE,INSERT,GRANT
+DBAdminRole,Transactions,USER_TABLE,SELECT,GRANT
+DBAdminRole,Transactions,USER_TABLE,UPDATE,GRANT
+DBAdminRole,Users,USER_TABLE,DELETE,GRANT
+DBAdminRole,Users,USER_TABLE,INSERT,GRANT
+DBAdminRole,Users,USER_TABLE,SELECT,GRANT
+DBAdminRole,Users,USER_TABLE,UPDATE,GRANT
+PropertyMgmtDev,MaintenanceRequests,USER_TABLE,DELETE,DENY
+PropertyMgmtDev,MaintenanceRequests,USER_TABLE,INSERT,DENY
+PropertyMgmtDev,MaintenanceRequests,USER_TABLE,SELECT,DENY
+PropertyMgmtDev,MaintenanceRequests,USER_TABLE,UPDATE,DENY
+PropertyMgmtDev,Properties,USER_TABLE,DELETE,DENY
+PropertyMgmtDev,Properties,USER_TABLE,INSERT,DENY
+PropertyMgmtDev,Properties,USER_TABLE,SELECT,DENY
+PropertyMgmtDev,Properties,USER_TABLE,UPDATE,DENY
+PropertyMgmtDev,sp_AddMaintenanceRequest,SQL_STORED_PROCEDURE,EXECUTE,GRANT
+PropertyMgmtDev,sp_AddNewProperty,SQL_STORED_PROCEDURE,EXECUTE,GRANT
+PropertyMgmtDev,sp_UpdateMaintenanceStatus,SQL_STORED_PROCEDURE,EXECUTE,GRANT
+PropertyMgmtDev,sp_UpdatePropertyStatus,SQL_STORED_PROCEDURE,EXECUTE,GRANT
+PropertyMgmtDev,vw_PropertyMgmt_MaintenanceRequests,VIEW,SELECT,GRANT
+PropertyMgmtDev,vw_PropertyMgmt_Properties,VIEW,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,SELECT,GRANT
+public,N/A - Certificate/Key,NULL,VIEW ANY COLUMN ENCRYPTION KEY DEFINITION,GRANT
+public,N/A - Certificate/Key,NULL,VIEW ANY COLUMN MASTER KEY DEFINITION,GRANT
