@@ -741,6 +741,410 @@ GO
 
 
 /* =============================================================================
+   11.1 AGENT OPERATIONS VIEW: AGENT SUMMARY
+   Purpose:
+   Allows Agent Operations Development to view agent records and total
+   transaction count without direct access to the Agents table.
+   ============================================================================= */
+   CREATE OR ALTER VIEW vw_AgentOps_Agents
+   AS
+    SELECT
+        a.AgentID,
+        a.FullName,
+        a.CommissionRate,
+        a.JoinedDate,
+        COUNT(t.TransactionID) AS TotalTransactions
+    FROM Agents a
+    LEFT JOIN Transactions t 
+        ON a.AgentID = t.AgentID
+    GROUP BY
+        a.AgentID,
+        a.FullName,
+        a.CommissionRate,
+        a.JoinedDate;
+GO
+
+GRANT SELECT ON vw_AgentOps_Agents TO AgentOpsDev;
+GO
+
+/* =============================================================================
+   11.2 AGENT OPERATIONS VIEW: AGENT TRANSACTIONS
+   Purpose:
+   Allows Agent Operations Development to view transaction records related
+   to agents without directly accessing the Transactions table.
+   ============================================================================= */
+
+   CREATE OR ALTER VIEW vw_AgentOps_Transactions AS
+    SELECT
+        t.TransactionID,
+        t.PropertyID,
+        p.PropertyName,
+        t.ClientID,
+        t.AgentID,
+        a.FullName AS AgentName,
+        t.TransactionType,
+        t.TransactionDate,
+        t.Amount
+    FROM Transactions t
+    JOIN Properties p 
+        ON t.PropertyID = p.PropertyID
+    JOIN Agents a 
+        ON t.AgentID = a.AgentID;
+GO
+
+GRANT SELECT ON vw_AgentOps_Transactions TO AgentOpsDev;
+GO
+
+/* =============================================================================
+   11.3 AGENT OPERATIONS VIEW: PERFORMANCE SUMMARY
+   Purpose:
+   Provides summarized agent performance without exposing raw client PII.
+   This supports agent monitoring while maintaining confidentiality.
+   ============================================================================= */
+
+   CREATE OR ALTER VIEW vw_AgentOps_PerformanceSummary AS
+    SELECT
+        a.AgentID,
+        a.FullName AS AgentName,
+        COUNT(t.TransactionID) AS TotalTransactions,
+        ISNULL(SUM(t.Amount), 0) AS TotalTransactionAmount,
+        ISNULL(AVG(t.Amount), 0) AS AverageTransactionAmount
+    FROM Agents a
+    LEFT JOIN Transactions t 
+        ON a.AgentID = t.AgentID
+    GROUP BY
+        a.AgentID,
+        a.FullName;
+GO
+
+GRANT SELECT ON vw_AgentOps_PerformanceSummary TO AgentOpsDev;
+GO
+
+/* =============================================================================
+   11.4 AGENT OPERATIONS PROCEDURES
+   Purpose:
+   Agent Operations Development must use controlled stored procedures for
+   decrypted contact viewing, new agent registration, transaction creation,
+   and commission updates.
+   ============================================================================= */
+   /* -------------------------------------------------------------------------
+   11.4.1 Procedure: Get Agent Contact Information
+   Purpose:
+   Retrieves decrypted agent contact information through a controlled
+   procedure using WITH EXECUTE AS OWNER.
+   ------------------------------------------------------------------------- */
+   CREATE OR ALTER PROCEDURE sp_GetAgentContactInfo
+    @AgentID INT = NULL
+WITH EXECUTE AS OWNER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    OPEN SYMMETRIC KEY PIIKey 
+    DECRYPTION BY CERTIFICATE PIICert;
+
+    SELECT
+        AgentID,
+        FullName,
+        CONVERT(NVARCHAR(20), DECRYPTBYKEY(ContactNumber_Enc)) AS ContactNumber,
+        CONVERT(NVARCHAR(100), DECRYPTBYKEY(Email_Enc)) AS Email
+    FROM Agents
+    WHERE (@AgentID IS NULL OR AgentID = @AgentID);
+
+    CLOSE SYMMETRIC KEY PIIKey;
+END;
+GO
+
+
+GRANT EXECUTE ON sp_GetAgentContactInfo TO AgentOpsDev;
+GO
+
+/* -------------------------------------------------------------------------
+   11.4.2 Procedure: Register New Agent
+   Purpose:
+   Inserts a new agent and encrypts contact number and email automatically.
+   ------------------------------------------------------------------------- */
+
+   CREATE OR ALTER PROCEDURE sp_RegisterNewAgent
+    @FullName NVARCHAR(100),
+    @ContactNumber NVARCHAR(20),
+    @Email NVARCHAR(100),
+    @CommissionRate DECIMAL(5,2)
+WITH EXECUTE AS OWNER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @CommissionRate < 0 OR @CommissionRate > 100
+    BEGIN
+        RAISERROR('Commission rate must be between 0 and 100.', 16, 1);
+        RETURN;
+    END;
+
+    OPEN SYMMETRIC KEY PIIKey 
+    DECRYPTION BY CERTIFICATE PIICert;
+
+    INSERT INTO Agents
+    (
+        FullName,
+        ContactNumber,
+        Email,
+        CommissionRate,
+        ContactNumber_Enc,
+        Email_Enc
+    )
+    VALUES
+    (
+        @FullName,
+        @ContactNumber,
+        @Email,
+        @CommissionRate,
+        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @ContactNumber),
+        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @Email)
+    );
+
+    CLOSE SYMMETRIC KEY PIIKey;
+END;
+GO
+
+
+GRANT EXECUTE ON sp_RegisterNewAgent TO AgentOpsDev;
+GO
+
+/* -------------------------------------------------------------------------
+   11.4.3 Procedure: Add Transaction
+   Purpose:
+   Allows Agent Operations Development to create a transaction through a
+   controlled procedure instead of direct table access.
+   ------------------------------------------------------------------------- */
+
+   CREATE OR ALTER PROCEDURE sp_AddTransaction
+    @PropertyID INT,
+    @ClientID INT,
+    @AgentID INT,
+    @TransactionType NVARCHAR(50),
+    @Amount DECIMAL(18,2)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO Transactions
+    (
+        PropertyID,
+        ClientID,
+        AgentID,
+        TransactionType,
+        Amount
+    )
+    VALUES
+    (
+        @PropertyID,
+        @ClientID,
+        @AgentID,
+        @TransactionType,
+        @Amount
+    );
+END;
+GO
+
+GRANT EXECUTE ON sp_AddTransaction TO AgentOpsDev;
+GO
+
+/* -------------------------------------------------------------------------
+   11.4.4 Procedure: Update Agent Commission
+   Purpose:
+   Allows Agent Operations Development to update commission rate through
+   a controlled procedure instead of direct table access.
+   ------------------------------------------------------------------------- */
+   CREATE OR ALTER PROCEDURE sp_UpdateAgentCommission
+    @AgentID INT,
+    @NewCommissionRate DECIMAL(5,2)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @NewCommissionRate < 0 OR @NewCommissionRate > 100
+    BEGIN
+        RAISERROR('Commission rate must be between 0 and 100.', 16, 1);
+        RETURN;
+    END;
+
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM Agents
+        WHERE AgentID = @AgentID
+    )
+    BEGIN
+        RAISERROR('Agent does not exist.', 16, 1);
+        RETURN;
+    END;
+
+    UPDATE Agents
+    SET CommissionRate = @NewCommissionRate
+    WHERE AgentID = @AgentID;
+END;
+GO
+
+GRANT EXECUTE ON sp_UpdateAgentCommission TO AgentOpsDev;
+GO
+
+/* =============================================================================
+   11.5 AGENT OPERATIONS - PERFORMANCE SUMMARY VIEW
+   Purpose:
+   Provides summarized agent performance without exposing raw client PII.
+   AgentOpsDev can view agent performance through this view instead of
+   directly accessing the Agents or Transactions base tables.
+   ============================================================================= */
+
+CREATE OR ALTER VIEW vw_AgentOps_PerformanceSummary AS
+    SELECT
+        a.AgentID,
+        a.FullName AS AgentName,
+        COUNT(t.TransactionID) AS TotalTransactions,
+        ISNULL(SUM(t.Amount), 0) AS TotalTransactionAmount,
+        ISNULL(AVG(t.Amount), 0) AS AverageTransactionAmount
+    FROM Agents a
+    LEFT JOIN Transactions t
+        ON a.AgentID = t.AgentID
+    GROUP BY
+        a.AgentID,
+        a.FullName;
+GO
+
+GRANT SELECT ON vw_AgentOps_PerformanceSummary TO AgentOpsDev;
+GO
+
+
+/* =============================================================================
+   11.6 AGENT OPERATIONS - UPDATE AGENT COMMISSION PROCEDURE
+   Purpose:
+   Allows AgentOpsDev to update an agent's commission rate through a
+   controlled stored procedure instead of direct UPDATE permission on
+   the Agents table.
+   ============================================================================= */
+
+CREATE OR ALTER PROCEDURE sp_UpdateAgentCommission
+    @AgentID INT,
+    @NewCommissionRate DECIMAL(5,2)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @NewCommissionRate < 0 OR @NewCommissionRate > 100
+    BEGIN
+        RAISERROR('Commission rate must be between 0 and 100.', 16, 1);
+        RETURN;
+    END;
+
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM Agents
+        WHERE AgentID = @AgentID
+    )
+    BEGIN
+        RAISERROR('Agent does not exist.', 16, 1);
+        RETURN;
+    END;
+
+    UPDATE Agents
+    SET CommissionRate = @NewCommissionRate
+    WHERE AgentID = @AgentID;
+END;
+GO
+
+GRANT EXECUTE ON sp_UpdateAgentCommission TO AgentOpsDev;
+GO
+
+
+/* =============================================================================
+   11.7 AGENT OPERATIONS - AGENT COMMISSION HISTORY TABLE
+   Purpose:
+   Stores commission rate changes for accountability and audit support.
+   This supports traceability when an agent's commission rate is changed.
+   ============================================================================= */
+
+CREATE TABLE AgentCommissionHistory
+(
+    CommissionHistoryID INT IDENTITY(1,1) PRIMARY KEY,
+
+    AgentID INT NOT NULL,
+
+    OldCommissionRate DECIMAL(5,2) NULL,
+
+    NewCommissionRate DECIMAL(5,2) NULL,
+
+    ChangedBy NVARCHAR(100) NOT NULL
+        CONSTRAINT DF_AgentCommissionHistory_ChangedBy
+        DEFAULT SUSER_SNAME(),
+
+    ChangedDate DATETIME NOT NULL
+        CONSTRAINT DF_AgentCommissionHistory_ChangedDate
+        DEFAULT GETDATE(),
+
+    Remarks NVARCHAR(255) NULL,
+
+    CONSTRAINT FK_AgentCommissionHistory_Agents
+        FOREIGN KEY (AgentID)
+        REFERENCES Agents(AgentID)
+);
+GO
+
+GRANT SELECT ON AgentCommissionHistory TO AgentOpsDev;
+GO
+
+
+/* =============================================================================
+   11.8 AGENT OPERATIONS - COMMISSION UPDATE TRIGGER
+   Purpose:
+   Automatically records old and new commission rates whenever an agent's
+   commission rate is updated.
+   ============================================================================= */
+
+CREATE TRIGGER trg_AgentCommission_UpdateHistory
+ON Agents
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO AgentCommissionHistory
+    (
+        AgentID,
+        OldCommissionRate,
+        NewCommissionRate,
+        ChangedBy,
+        Remarks
+    )
+    SELECT
+        i.AgentID,
+        d.CommissionRate,
+        i.CommissionRate,
+        SUSER_SNAME(),
+        'Agent commission rate updated.'
+    FROM inserted i
+    INNER JOIN deleted d
+        ON i.AgentID = d.AgentID
+    WHERE ISNULL(i.CommissionRate, 0) <> ISNULL(d.CommissionRate, 0);
+END;
+GO
+
+
+/* =============================================================================
+   11.9 AGENT OPERATIONS - ACCESS CONTROL
+   Purpose:
+   AgentOpsDev is only allowed to access approved views and stored
+   procedures. Direct access to sensitive base tables is denied.
+   ============================================================================= */
+
+DENY SELECT, INSERT, UPDATE, DELETE ON Agents TO AgentOpsDev;
+DENY SELECT, INSERT, UPDATE, DELETE ON Transactions TO AgentOpsDev;
+DENY SELECT, INSERT, UPDATE, DELETE ON Clients TO AgentOpsDev;
+DENY SELECT, INSERT, UPDATE, DELETE ON Users TO AgentOpsDev;
+GO
+
+/* =============================================================================
    SECTION 12: TRANSPARENT DATA ENCRYPTION (TDE) - BONUS
    Purpose: Column-level encryption (Section 5) protects specific PII
    fields and remains reversible on demand for legitimate use. TDE is a
@@ -1166,10 +1570,31 @@ SELECT * FROM Users;                                             -- WORKS: full 
 REVERT;
 
 -- 19.5 Agent Operations Development (Lim Jia Hui)
+USE GreenAcresEMS_Final;
+GO
 EXECUTE AS USER = 'limjiahui_login';
-SELECT * FROM vw_AgentOps_Agents;                                -- WORKS
-EXEC sp_GetAgentContactInfo;                                     -- WORKS: decrypted PII
-SELECT * FROM Agents;                                            -- DENIED
+SELECT * FROM vw_AgentOps_Agents; 
+-- WORKS
+SELECT* FROM vw_AgentOps_Transactions;
+--WORKS
+SELECT*FROM vw_AgentOps_PerformanceSummary;
+--WORKS
+EXEC sp_GetAgentContactInfo; 
+-- WORKS: decrypted PII
+EXEC sp_RegisterNewAgent
+    @FullName = 'Verification Agent',
+    @ContactNumber = '019-2223333',
+    @Email = 'verify.agent@greenacres.com',
+    @CommissionRate = 3.20;
+EXEC sp_UpdateAgentCommission
+    @AgentID = 1,
+    @NewCommissionRate = 3.80;
+SELECT * FROM AgentCommissionHistory;
+
+SELECT * FROM Agents;   
+-- DENIED
+SELECT * FROM Clients;
+--DENIED
 REVERT;
 GO
 
@@ -1212,7 +1637,21 @@ WHERE dp.type = 'R'
 ORDER BY dp.name, o.name, perm.permission_name;
 GO
 
-
+--20.3 Agent Operations Permission Evidence
+SELECT
+    dp.name AS RoleOrUser,
+    ISNULL(o.name, 'N/A') AS ObjectName,
+    o.type_desc AS ObjectType,
+    perm.permission_name AS Permission,
+    perm.state_desc AS GrantOrDeny
+FROM sys.database_permissions perm
+JOIN sys.database_principals dp
+    ON perm.grantee_principal_id = dp.principal_id
+LEFT JOIN sys.objects o
+    ON perm.major_id = o.object_id
+WHERE dp.name = 'AgentOpsDev'
+ORDER BY o.name, perm.permission_name;
+GO
 /* =============================================================================
    SECTION 21: FINAL BACKUP
    Purpose: Take one last backup reflecting the fully completed database,
