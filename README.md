@@ -38,3 +38,7 @@ Database Security assignment (CT069-3-3). This is a redesign of Green Acres Real
 - Run this against a fresh database. If you already have one with these table/view names, rename or drop it first.
 - Passwords in the script are for coursework testing only.
 - The server audit, server audit specification, logon trigger, and LoginAudit table are server-level, not per-database - if you've already run this once on the same server, those specific CREATE statements will error since they already exist. Just skip them.
+
+
+## Documentation
+https://1drv.ms/w/c/21354877929028ce/IQBJY2phBub5TJgJ7L2cqoz9AVBzHO4PRT95ct4CUMYkMqQ?e=K4ECxP
