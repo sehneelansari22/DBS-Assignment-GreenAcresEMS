@@ -1663,3 +1663,90 @@ BACKUP DATABASE GreenAcresEMS_Final
     TO DISK = 'C:\GreenAcresBackups\GreenAcresEMS_Final_Final_Full.bak'
     WITH INIT, NAME = 'GreenAcresEMS_Final-Final Submission Backup';
 GO
+
+
+/* =============================================================================
+   SECTION 22: CLIENT EMAIL HASHING [BONUS]
+   Purpose: A second, distinct application of hashing beyond passwords.
+   Stores a one-way hash of each client's normalized email, enabling
+   duplicate-email detection at registration WITHOUT needing to compare
+   plaintext emails directly. Uses a "pepper" - a fixed secret value known
+   only to the application (not stored in the database), combined with the
+   email before hashing - which is a different technique from the salted
+   password hashing in Section 3 (there, each user gets a unique random
+   salt; here, the same pepper is deliberately reused so that hashes of
+   the same email are always identical, which is required to detect
+   duplicates).
+   ============================================================================= */
+
+USE GreenAcresEMS_Final;
+GO
+
+-- 22.1: Add the EmailHash column to Clients
+ALTER TABLE Clients ADD EmailHash VARBINARY(32) NULL;
+GO
+
+-- 22.2: Backfill EmailHash for existing clients
+-- Normalization: lowercase + trim, so 'John@Gmail.com' and 'john@gmail.com '
+-- are treated as the same email for duplicate-detection purposes.
+UPDATE Clients
+SET EmailHash = HASHBYTES('SHA2_256', LOWER(LTRIM(RTRIM(Email))) + 'GreenAcresPepper2026')
+WHERE Email IS NOT NULL;
+GO
+
+-- 22.2b: Fix - two pairs of existing test/demo records shared the same
+-- email (from earlier repeated testing), which would violate the unique
+-- index below. Rename the newer duplicate of each pair to keep both rows
+-- as valid history while making every email genuinely unique.
+UPDATE Clients SET Email = 'injection.test.2@gmail.com' WHERE ClientID = 16;
+UPDATE Clients SET Email = 'verify1.b@gmail.com' WHERE ClientID = 12;
+GO
+
+-- Recompute EmailHash for the two renamed rows so it matches their new email
+UPDATE Clients
+SET EmailHash = HASHBYTES('SHA2_256', LOWER(LTRIM(RTRIM(Email))) + 'GreenAcresPepper2026')
+WHERE Email IS NOT NULL;
+GO
+
+-- 22.3: Add a unique index on EmailHash so the database itself enforces
+-- no two clients can ever share the same normalized email
+CREATE UNIQUE INDEX UX_Clients_EmailHash ON Clients(EmailHash) WHERE EmailHash IS NOT NULL;
+GO
+
+-- 22.4: Update sp_RegisterNewClient to compute EmailHash and check for
+-- duplicates BEFORE inserting, with a clear error message rather than
+-- letting it fail on the unique index alone
+ALTER PROCEDURE sp_RegisterNewClient
+    @FullName NVARCHAR(100),
+    @ContactNumber NVARCHAR(20),
+    @Email NVARCHAR(100),
+    @Address NVARCHAR(255)
+WITH EXECUTE AS OWNER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @EmailHash VARBINARY(32) = HASHBYTES('SHA2_256', LOWER(LTRIM(RTRIM(@Email))) + 'GreenAcresPepper2026');
+
+    IF EXISTS (SELECT 1 FROM Clients WHERE EmailHash = @EmailHash)
+    BEGIN
+        RAISERROR('A client with this email address is already registered.', 16, 1);
+        RETURN;
+    END
+
+    OPEN SYMMETRIC KEY PIIKey DECRYPTION BY CERTIFICATE PIICert;
+    INSERT INTO Clients (FullName, ContactNumber, Email, Address, ContactNumber_Enc, Email_Enc, Address_Enc, EmailHash)
+    VALUES (
+        @FullName, @ContactNumber, @Email, @Address,
+        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @ContactNumber),
+        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @Email),
+        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @Address),
+        @EmailHash
+    );
+    CLOSE SYMMETRIC KEY PIIKey;
+END;
+GO
+
+-- 22.5: Verify - EmailHash shows unreadable binary for all existing clients
+SELECT ClientID, FullName, Email, EmailHash FROM Clients;
+GO
