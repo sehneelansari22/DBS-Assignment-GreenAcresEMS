@@ -1,5 +1,5 @@
 /* =============================================================================
-   DBS_TestCases_<group number>.sql
+   DBS_TestCases_<Group_19>.sql
    Green Acres Realty EMS - Database Security Assignment - CT069-3-3
 
    Purpose: Compiled test cases proving each security control works as
