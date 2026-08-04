@@ -1,7 +1,7 @@
 /* =============================================================================
    GREEN ACRES REALTY - ESTATE MANAGEMENT SYSTEM (EMS)
    Database Security Assignment - CT069-3-3
-   Full Implementation Script (Final, Hardened Version)
+   Group 19 - Refined Full Implementation Script
 
    Run this file top to bottom, in order, in SQL Server Management Studio,
    against a fresh instance. Lines marked >>> CHANGE ME require a local
@@ -13,8 +13,14 @@
    SECTION 0: DATABASE SETUP
    ============================================================================= */
 
-IF DB_ID('GreenAcresEMS_Final') IS NULL
-    CREATE DATABASE GreenAcresEMS_Final;
+-- Stop if an earlier build exists. This avoids mixing old test records or
+-- security objects into the final demonstration. Remove the old lab database
+-- manually only when you intentionally want a fresh rebuild.
+IF DB_ID('GreenAcresEMS_Final') IS NOT NULL
+    THROW 50000, 'GreenAcresEMS_Final already exists. Use a fresh database for this build.', 1;
+GO
+
+CREATE DATABASE GreenAcresEMS_Final;
 GO
 
 USE GreenAcresEMS_Final;
@@ -181,7 +187,7 @@ GO
    SECTION 3: DEPARTMENTS AND APPLICATION USERS (SALTED HASHING)
    Purpose: Represent the new IT division's departments, and demonstrate a
    complete, correct password lifecycle - creation and verification - using
-   one-way salted hashing (SHA2_256). The salt is generated once per user
+   one-way salted hashing (SHA2_512). The salt is generated once per user
    and stored alongside the hash; verification re-hashes the supplied
    password with that same stored salt and compares the result. At no point
    is a plain-text password ever stored, logged, or displayed - not even to
@@ -205,10 +211,15 @@ GO
 CREATE TABLE Users (
     UserID        INT IDENTITY(1,1) PRIMARY KEY,
     Username      NVARCHAR(50) UNIQUE NOT NULL,
-    PasswordSalt  UNIQUEIDENTIFIER NOT NULL,          -- generated once at creation, reused at verification
-    PasswordHash  VARBINARY(64) NOT NULL,             -- SHA2_256(password + salt); irreversible
+    PasswordSalt  VARBINARY(32) NOT NULL,              -- cryptographically random per-user salt
+    PasswordHash  VARBINARY(64) NOT NULL,              -- SHA2_512(salt + password); irreversible
     DepartmentID  INT NOT NULL CONSTRAINT FK_Users_Department FOREIGN KEY REFERENCES Departments(DepartmentID),
-    CreatedDate   DATETIME NOT NULL CONSTRAINT DF_Users_Created DEFAULT GETDATE()
+    FailedLoginCount INT NOT NULL CONSTRAINT DF_Users_Failed DEFAULT 0,
+    IsActive      BIT NOT NULL CONSTRAINT DF_Users_Active DEFAULT 1,
+    LastSuccessfulLogin DATETIME2(0) NULL,
+    LastFailedLogin DATETIME2(0) NULL,
+    CreatedDate   DATETIME2(0) NOT NULL CONSTRAINT DF_Users_Created DEFAULT SYSDATETIME(),
+    CONSTRAINT CK_Users_FailedLogin CHECK (FailedLoginCount BETWEEN 0 AND 5)
 );
 GO
 
@@ -223,12 +234,22 @@ CREATE PROCEDURE sp_CreateAppUser
 AS
 BEGIN
     SET NOCOUNT ON;
-    DECLARE @Salt UNIQUEIDENTIFIER = NEWID();
+
+    IF NULLIF(LTRIM(RTRIM(@Username)), N'') IS NULL
+        THROW 50001, 'Username is required.', 1;
+
+    IF @PlaintextPassword IS NULL OR LEN(@PlaintextPassword) < 12
+        THROW 50002, 'Password must contain at least 12 characters.', 1;
+
+    IF NOT EXISTS (SELECT 1 FROM Departments WHERE DepartmentID=@DepartmentID)
+        THROW 50003, 'Department does not exist.', 1;
+
+    DECLARE @Salt VARBINARY(32) = CRYPT_GEN_RANDOM(32);
     INSERT INTO Users (Username, PasswordSalt, PasswordHash, DepartmentID)
     VALUES (
         @Username,
         @Salt,
-        HASHBYTES('SHA2_256', @PlaintextPassword + CONVERT(NVARCHAR(36), @Salt)),
+        HASHBYTES('SHA2_512', @Salt + CONVERT(VARBINARY(MAX), @PlaintextPassword)),
         @DepartmentID
     );
 END;
@@ -247,23 +268,71 @@ CREATE PROCEDURE sp_VerifyAppUserLogin
 AS
 BEGIN
     SET NOCOUNT ON;
+    SET XACT_ABORT ON;
     SET @IsValid = 0;
 
-    SELECT @IsValid = CASE
-        WHEN PasswordHash = HASHBYTES('SHA2_256', @PlaintextPassword + CONVERT(NVARCHAR(36), PasswordSalt))
-        THEN 1 ELSE 0 END
-    FROM Users
-    WHERE Username = @Username;
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @UserID INT,
+                @Salt VARBINARY(32),
+                @StoredHash VARBINARY(64),
+                @IsActive BIT;
+
+        -- Lock the row so simultaneous failures cannot bypass the counter.
+        SELECT @UserID=UserID,@Salt=PasswordSalt,@StoredHash=PasswordHash,@IsActive=IsActive
+        FROM Users WITH (UPDLOCK,HOLDLOCK)
+        WHERE Username=@Username;
+
+        IF @UserID IS NULL OR @IsActive=0
+        BEGIN
+            COMMIT TRANSACTION;
+            RETURN;
+        END;
+
+        IF @StoredHash=HASHBYTES('SHA2_512',@Salt+CONVERT(VARBINARY(MAX),@PlaintextPassword))
+        BEGIN
+            UPDATE Users
+            SET FailedLoginCount=0,LastSuccessfulLogin=SYSDATETIME()
+            WHERE UserID=@UserID;
+            SET @IsValid=1;
+        END
+        ELSE
+        BEGIN
+            UPDATE Users
+            SET FailedLoginCount=CASE WHEN FailedLoginCount<5 THEN FailedLoginCount+1 ELSE 5 END,
+                IsActive=CASE WHEN FailedLoginCount+1>=5 THEN 0 ELSE IsActive END,
+                LastFailedLogin=SYSDATETIME()
+            WHERE UserID=@UserID;
+        END;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT>0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END;
+GO
+
+-- DBA-controlled recovery for a legitimate account locked after five failures.
+CREATE PROCEDURE sp_UnlockAppUser
+    @Username NVARCHAR(50)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE Users SET FailedLoginCount=0,IsActive=1 WHERE Username=@Username;
+    IF @@ROWCOUNT=0 THROW 50004, 'Application user was not found.', 1;
 END;
 GO
 
 -- One application account per department, named after the staff member
 -- responsible for it.
-EXEC sp_CreateAppUser @Username='izzah.zulkafli', @PlaintextPassword='Izzah@2026!',  @DepartmentID=1;  -- Property Management Dev
-EXEC sp_CreateAppUser @Username='sehneel.ansari', @PlaintextPassword='Sehneel@2026!',@DepartmentID=2;  -- Client Portal Dev
-EXEC sp_CreateAppUser @Username='priya.suhuba',   @PlaintextPassword='Priya@2026!',  @DepartmentID=3;  -- Analytics
-EXEC sp_CreateAppUser @Username='imran.amir',     @PlaintextPassword='Imran@2026!',  @DepartmentID=4;  -- Database Administration
-EXEC sp_CreateAppUser @Username='lim.jiahui',     @PlaintextPassword='JiaHui@2026!', @DepartmentID=5;  -- Agent Operations Dev
+EXEC sp_CreateAppUser @Username='izzah.zulkafli', @PlaintextPassword='Izzah@2026App!',   @DepartmentID=1;  -- Property Management Dev
+EXEC sp_CreateAppUser @Username='sehneel.ansari', @PlaintextPassword='Sehneel@2026App!', @DepartmentID=2;  -- Client Portal Dev
+EXEC sp_CreateAppUser @Username='priya.suhuba',   @PlaintextPassword='Priya@2026App!',   @DepartmentID=3;  -- Analytics
+EXEC sp_CreateAppUser @Username='imran.amir',     @PlaintextPassword='Imran@2026App!',   @DepartmentID=4;  -- Database Administration
+EXEC sp_CreateAppUser @Username='lim.jiahui',     @PlaintextPassword='JiaHui@2026App!',  @DepartmentID=5;  -- Agent Operations Dev
 GO
 
 -- Verify: PasswordHash displays as unreadable binary - proof no plain-text
@@ -275,11 +344,14 @@ GO
 -- incorrect password, proving the hash comparison genuinely works.
 DECLARE @Result BIT;
 
-EXEC sp_VerifyAppUserLogin @Username='izzah.zulkafli', @PlaintextPassword='Izzah@2026!', @IsValid=@Result OUTPUT;
+EXEC sp_VerifyAppUserLogin @Username='izzah.zulkafli', @PlaintextPassword='Izzah@2026App!', @IsValid=@Result OUTPUT;
 SELECT 'Correct password' AS TestCase, @Result AS IsValid;
 
 EXEC sp_VerifyAppUserLogin @Username='izzah.zulkafli', @PlaintextPassword='WrongPassword', @IsValid=@Result OUTPUT;
 SELECT 'Incorrect password' AS TestCase, @Result AS IsValid;
+
+-- Return the demonstration account to a clean state for the separate tests.
+EXEC sp_UnlockAppUser @Username='izzah.zulkafli';
 GO
 
 
@@ -303,6 +375,7 @@ CREATE ROLE ClientPortalDev;
 CREATE ROLE AnalyticsTeam;
 CREATE ROLE DBAdminRole;
 CREATE ROLE AgentOpsDev;
+CREATE ROLE SecurityAuditor;
 GO
 
 -- Izzah Zulkafli - Property Management Development
@@ -329,6 +402,11 @@ ALTER ROLE DBAdminRole ADD MEMBER imran_amir_login;
 CREATE LOGIN limjiahui_login WITH PASSWORD = 'JiaHui@2026Strong!', CHECK_POLICY = ON, CHECK_EXPIRATION = ON;
 CREATE USER  limjiahui_login FOR LOGIN limjiahui_login;
 ALTER ROLE AgentOpsDev ADD MEMBER limjiahui_login;
+
+-- Independent auditor - reviews evidence but cannot change business data.
+CREATE LOGIN security_auditor_login WITH PASSWORD = 'SecurityAudit@2026Strong!', CHECK_POLICY = ON, CHECK_EXPIRATION = ON;
+CREATE USER  security_auditor_login FOR LOGIN security_auditor_login;
+ALTER ROLE SecurityAuditor ADD MEMBER security_auditor_login;
 GO
 
 
@@ -341,6 +419,15 @@ GO
    so that only the specific sensitive fields carry the performance/storage
    cost of encryption, and so different columns could use different keys
    in future if required.
+
+   Design limitation and compensating controls: the inherited plaintext PII
+   columns are retained to support legacy compatibility and demonstrate SQL
+   Server Dynamic Data Masking. The AES-256 columns therefore demonstrate
+   selective column-level encryption and controlled recovery, not complete
+   elimination of plaintext at rest. Exposure is reduced through TDE, explicit
+   base-table DENY permissions, controlled views/procedures and comprehensive
+   auditing. A production migration should make encrypted storage authoritative
+   and expose masked values through a secured application layer.
    ============================================================================= */
 
 CREATE MASTER KEY ENCRYPTION BY PASSWORD = 'GreenAcres@MasterKey2026!';
@@ -414,6 +501,62 @@ GO
 GRANT UNMASK TO DBAdminRole;
 GO
 
+/* =============================================================================
+   SECTION 6.1: SENSITIVITY CLASSIFICATION [BONUS]
+   Purpose: Label PII, credential and financial columns so live database
+   metadata aligns with the report's Data Classification Matrix.
+
+   Limitation: classification is governance metadata and does not itself
+   restrict access. Encryption, masking, RBAC, TDE and auditing provide the
+   actual protection. Version-specific DDL is dynamic so SQL Server versions
+   below 2019 continue without a parser or catalog-view failure.
+   ============================================================================= */
+
+DECLARE @ClassificationMajorVersion INT =
+    CAST(SERVERPROPERTY('ProductMajorVersion') AS INT);
+
+IF @ClassificationMajorVersion >= 15
+BEGIN
+    EXEC sys.sp_executesql N'
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Clients.FullName
+        WITH (LABEL=''Confidential'', INFORMATION_TYPE=''Name'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Clients.ContactNumber
+        WITH (LABEL=''Highly Confidential'', INFORMATION_TYPE=''Contact Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Clients.Email
+        WITH (LABEL=''Highly Confidential'', INFORMATION_TYPE=''Contact Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Clients.Address
+        WITH (LABEL=''Highly Confidential'', INFORMATION_TYPE=''Contact Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Clients.ContactNumber_Enc
+        WITH (LABEL=''Highly Confidential'', INFORMATION_TYPE=''Encrypted Contact Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Clients.Email_Enc
+        WITH (LABEL=''Highly Confidential'', INFORMATION_TYPE=''Encrypted Contact Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Clients.Address_Enc
+        WITH (LABEL=''Highly Confidential'', INFORMATION_TYPE=''Encrypted Contact Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Agents.ContactNumber
+        WITH (LABEL=''Highly Confidential'', INFORMATION_TYPE=''Contact Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Agents.Email
+        WITH (LABEL=''Highly Confidential'', INFORMATION_TYPE=''Contact Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Agents.ContactNumber_Enc
+        WITH (LABEL=''Highly Confidential'', INFORMATION_TYPE=''Encrypted Contact Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Agents.Email_Enc
+        WITH (LABEL=''Highly Confidential'', INFORMATION_TYPE=''Encrypted Contact Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Agents.CommissionRate
+        WITH (LABEL=''Confidential'', INFORMATION_TYPE=''Financial Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Transactions.Amount
+        WITH (LABEL=''Confidential'', INFORMATION_TYPE=''Financial Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Users.PasswordSalt
+        WITH (LABEL=''Restricted'', INFORMATION_TYPE=''Authentication Information'');
+        ADD SENSITIVITY CLASSIFICATION TO dbo.Users.PasswordHash
+        WITH (LABEL=''Restricted'', INFORMATION_TYPE=''Authentication Information'');
+    ';
+    PRINT 'Sensitivity classifications applied successfully.';
+END
+ELSE
+BEGIN
+    PRINT 'Sensitivity classification skipped: SQL Server 2019 or later is required. Existing protection controls remain active.';
+END;
+GO
+
 
 /* =============================================================================
    SECTION 7: CLIENT PORTAL DEVELOPMENT - VIEWS, PROCEDURES, ACCESS CONTROL
@@ -438,20 +581,25 @@ GRANT SELECT ON vw_ClientPortal_Clients TO ClientPortalDev;
 GO
 
 CREATE PROCEDURE sp_GetClientContactInfo
-    @ClientID INT = NULL
+    @ClientID INT
 WITH EXECUTE AS OWNER
 AS
 BEGIN
     SET NOCOUNT ON;
-    OPEN SYMMETRIC KEY PIIKey DECRYPTION BY CERTIFICATE PIICert;
-    SELECT
-        ClientID, FullName,
-        CONVERT(NVARCHAR(20),  DECRYPTBYKEY(ContactNumber_Enc)) AS ContactNumber,
-        CONVERT(NVARCHAR(100), DECRYPTBYKEY(Email_Enc))         AS Email,
-        CONVERT(NVARCHAR(255), DECRYPTBYKEY(Address_Enc))       AS Address
-    FROM Clients
-    WHERE (@ClientID IS NULL OR ClientID = @ClientID);
-    CLOSE SYMMETRIC KEY PIIKey;
+    BEGIN TRY
+        OPEN SYMMETRIC KEY PIIKey DECRYPTION BY CERTIFICATE PIICert;
+        SELECT ClientID,FullName,
+               CONVERT(NVARCHAR(20),DECRYPTBYKEY(ContactNumber_Enc)) AS ContactNumber,
+               CONVERT(NVARCHAR(100),DECRYPTBYKEY(Email_Enc)) AS Email,
+               CONVERT(NVARCHAR(255),DECRYPTBYKEY(Address_Enc)) AS Address
+        FROM Clients WHERE ClientID=@ClientID;
+        CLOSE SYMMETRIC KEY PIIKey;
+    END TRY
+    BEGIN CATCH
+        IF EXISTS(SELECT 1 FROM sys.openkeys WHERE key_name=N'PIIKey')
+            CLOSE SYMMETRIC KEY PIIKey;
+        THROW;
+    END CATCH
 END;
 GO
 GRANT EXECUTE ON sp_GetClientContactInfo TO ClientPortalDev;
@@ -518,7 +666,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
     UPDATE Properties
-    SET Status = @NewStatus, ModifiedDate = GETDATE(), ModifiedBy = SUSER_SNAME()
+    SET Status = @NewStatus, ModifiedDate = GETDATE(), ModifiedBy = ORIGINAL_LOGIN()
     WHERE PropertyID = @PropertyID;
 END;
 GO
@@ -644,6 +792,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON Transactions          TO DBAdminRole;
 GRANT SELECT, INSERT, UPDATE, DELETE ON MaintenanceRequests   TO DBAdminRole;
 GRANT SELECT, INSERT, UPDATE, DELETE ON Departments           TO DBAdminRole;
 GRANT SELECT, INSERT, UPDATE, DELETE ON Users                 TO DBAdminRole;
+GRANT BACKUP DATABASE TO DBAdminRole;
+GRANT BACKUP LOG TO DBAdminRole;
 GO
 
 GRANT CONTROL ON CERTIFICATE::PIICert TO DBAdminRole;
@@ -683,20 +833,39 @@ GO
 GRANT SELECT ON vw_AgentOps_Transactions TO AgentOpsDev;
 GO
 
+-- Aggregated performance view avoids exposing client PII while supporting
+-- agent monitoring and commission review.
+CREATE VIEW vw_AgentOps_PerformanceSummary AS
+    SELECT a.AgentID,a.FullName AS AgentName,
+           COUNT(t.TransactionID) AS TotalTransactions,
+           ISNULL(SUM(t.Amount),0) AS TotalTransactionAmount,
+           ISNULL(AVG(t.Amount),0) AS AverageTransactionAmount
+    FROM Agents a
+    LEFT JOIN Transactions t ON t.AgentID=a.AgentID
+    GROUP BY a.AgentID,a.FullName;
+GO
+GRANT SELECT ON vw_AgentOps_PerformanceSummary TO AgentOpsDev;
+GO
+
 CREATE PROCEDURE sp_GetAgentContactInfo
-    @AgentID INT = NULL
+    @AgentID INT
 WITH EXECUTE AS OWNER
 AS
 BEGIN
     SET NOCOUNT ON;
-    OPEN SYMMETRIC KEY PIIKey DECRYPTION BY CERTIFICATE PIICert;
-    SELECT
-        AgentID, FullName,
-        CONVERT(NVARCHAR(20),  DECRYPTBYKEY(ContactNumber_Enc)) AS ContactNumber,
-        CONVERT(NVARCHAR(100), DECRYPTBYKEY(Email_Enc))         AS Email
-    FROM Agents
-    WHERE (@AgentID IS NULL OR AgentID = @AgentID);
-    CLOSE SYMMETRIC KEY PIIKey;
+    BEGIN TRY
+        OPEN SYMMETRIC KEY PIIKey DECRYPTION BY CERTIFICATE PIICert;
+        SELECT AgentID,FullName,
+               CONVERT(NVARCHAR(20),DECRYPTBYKEY(ContactNumber_Enc)) AS ContactNumber,
+               CONVERT(NVARCHAR(100),DECRYPTBYKEY(Email_Enc)) AS Email
+        FROM Agents WHERE AgentID=@AgentID;
+        CLOSE SYMMETRIC KEY PIIKey;
+    END TRY
+    BEGIN CATCH
+        IF EXISTS(SELECT 1 FROM sys.openkeys WHERE key_name=N'PIIKey')
+            CLOSE SYMMETRIC KEY PIIKey;
+        THROW;
+    END CATCH
 END;
 GO
 GRANT EXECUTE ON sp_GetAgentContactInfo TO AgentOpsDev;
@@ -709,14 +878,22 @@ WITH EXECUTE AS OWNER
 AS
 BEGIN
     SET NOCOUNT ON;
-    OPEN SYMMETRIC KEY PIIKey DECRYPTION BY CERTIFICATE PIICert;
-    INSERT INTO Agents (FullName, ContactNumber, Email, CommissionRate, ContactNumber_Enc, Email_Enc)
-    VALUES (
-        @FullName, @ContactNumber, @Email, @CommissionRate,
-        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @ContactNumber),
-        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @Email)
-    );
-    CLOSE SYMMETRIC KEY PIIKey;
+    IF @CommissionRate NOT BETWEEN 0 AND 100
+        THROW 50030, 'Commission rate must be between 0 and 100.', 1;
+
+    BEGIN TRY
+        OPEN SYMMETRIC KEY PIIKey DECRYPTION BY CERTIFICATE PIICert;
+        INSERT INTO Agents (FullName,ContactNumber,Email,CommissionRate,ContactNumber_Enc,Email_Enc)
+        VALUES(@FullName,@ContactNumber,@Email,@CommissionRate,
+               ENCRYPTBYKEY(KEY_GUID('PIIKey'),@ContactNumber),
+               ENCRYPTBYKEY(KEY_GUID('PIIKey'),@Email));
+        CLOSE SYMMETRIC KEY PIIKey;
+    END TRY
+    BEGIN CATCH
+        IF EXISTS(SELECT 1 FROM sys.openkeys WHERE key_name=N'PIIKey')
+            CLOSE SYMMETRIC KEY PIIKey;
+        THROW;
+    END CATCH
 END;
 GO
 GRANT EXECUTE ON sp_RegisterNewAgent TO AgentOpsDev;
@@ -728,11 +905,51 @@ CREATE PROCEDURE sp_AddTransaction
 AS
 BEGIN
     SET NOCOUNT ON;
-    INSERT INTO Transactions (PropertyID, ClientID, AgentID, TransactionType, Amount)
-    VALUES (@PropertyID, @ClientID, @AgentID, @TransactionType, @Amount);
+    SET XACT_ABORT ON;
+
+    IF @TransactionType NOT IN (N'Sale',N'Rent')
+        THROW 50031, 'Transaction type must be Sale or Rent.', 1;
+    IF @Amount<=0
+        THROW 50032, 'Transaction amount must be greater than zero.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        -- Serialise the availability check so two sessions cannot transact the
+        -- same property simultaneously.
+        IF NOT EXISTS(SELECT 1 FROM Properties WITH(UPDLOCK,HOLDLOCK)
+                      WHERE PropertyID=@PropertyID AND Status=N'Available')
+            THROW 50033, 'Property is not available for a new transaction.', 1;
+
+        INSERT INTO Transactions(PropertyID,ClientID,AgentID,TransactionType,Amount)
+        VALUES(@PropertyID,@ClientID,@AgentID,@TransactionType,@Amount);
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT>0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
 END;
 GO
 GRANT EXECUTE ON sp_AddTransaction TO AgentOpsDev;
+GO
+
+CREATE PROCEDURE sp_UpdateAgentCommission
+    @AgentID INT,
+    @NewCommissionRate DECIMAL(5,2)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @NewCommissionRate NOT BETWEEN 0 AND 100
+        THROW 50034, 'Commission rate must be between 0 and 100.', 1;
+    IF NOT EXISTS(SELECT 1 FROM Agents WHERE AgentID=@AgentID)
+        THROW 50035, 'Agent does not exist.', 1;
+    IF EXISTS(SELECT 1 FROM Agents WHERE AgentID=@AgentID AND CommissionRate=@NewCommissionRate)
+        THROW 50036, 'New commission rate is unchanged.', 1;
+
+    UPDATE Agents SET CommissionRate=@NewCommissionRate WHERE AgentID=@AgentID;
+END;
+GO
+GRANT EXECUTE ON sp_UpdateAgentCommission TO AgentOpsDev;
 GO
 
 DENY SELECT, INSERT, UPDATE, DELETE ON Agents TO AgentOpsDev;
@@ -740,322 +957,6 @@ DENY SELECT, INSERT, UPDATE, DELETE ON Transactions TO AgentOpsDev;
 GO
 
 
-/* =============================================================================
-   11.1 AGENT OPERATIONS VIEW: AGENT SUMMARY
-   Purpose:
-   Allows Agent Operations Development to view agent records and total
-   transaction count without direct access to the Agents table.
-   ============================================================================= */
-   CREATE OR ALTER VIEW vw_AgentOps_Agents
-   AS
-    SELECT
-        a.AgentID,
-        a.FullName,
-        a.CommissionRate,
-        a.JoinedDate,
-        COUNT(t.TransactionID) AS TotalTransactions
-    FROM Agents a
-    LEFT JOIN Transactions t 
-        ON a.AgentID = t.AgentID
-    GROUP BY
-        a.AgentID,
-        a.FullName,
-        a.CommissionRate,
-        a.JoinedDate;
-GO
-
-GRANT SELECT ON vw_AgentOps_Agents TO AgentOpsDev;
-GO
-
-/* =============================================================================
-   11.2 AGENT OPERATIONS VIEW: AGENT TRANSACTIONS
-   Purpose:
-   Allows Agent Operations Development to view transaction records related
-   to agents without directly accessing the Transactions table.
-   ============================================================================= */
-
-   CREATE OR ALTER VIEW vw_AgentOps_Transactions AS
-    SELECT
-        t.TransactionID,
-        t.PropertyID,
-        p.PropertyName,
-        t.ClientID,
-        t.AgentID,
-        a.FullName AS AgentName,
-        t.TransactionType,
-        t.TransactionDate,
-        t.Amount
-    FROM Transactions t
-    JOIN Properties p 
-        ON t.PropertyID = p.PropertyID
-    JOIN Agents a 
-        ON t.AgentID = a.AgentID;
-GO
-
-GRANT SELECT ON vw_AgentOps_Transactions TO AgentOpsDev;
-GO
-
-/* =============================================================================
-   11.3 AGENT OPERATIONS VIEW: PERFORMANCE SUMMARY
-   Purpose:
-   Provides summarized agent performance without exposing raw client PII.
-   This supports agent monitoring while maintaining confidentiality.
-   ============================================================================= */
-
-   CREATE OR ALTER VIEW vw_AgentOps_PerformanceSummary AS
-    SELECT
-        a.AgentID,
-        a.FullName AS AgentName,
-        COUNT(t.TransactionID) AS TotalTransactions,
-        ISNULL(SUM(t.Amount), 0) AS TotalTransactionAmount,
-        ISNULL(AVG(t.Amount), 0) AS AverageTransactionAmount
-    FROM Agents a
-    LEFT JOIN Transactions t 
-        ON a.AgentID = t.AgentID
-    GROUP BY
-        a.AgentID,
-        a.FullName;
-GO
-
-GRANT SELECT ON vw_AgentOps_PerformanceSummary TO AgentOpsDev;
-GO
-
-/* =============================================================================
-   11.4 AGENT OPERATIONS PROCEDURES
-   Purpose:
-   Agent Operations Development must use controlled stored procedures for
-   decrypted contact viewing, new agent registration, transaction creation,
-   and commission updates.
-   ============================================================================= */
-   /* -------------------------------------------------------------------------
-   11.4.1 Procedure: Get Agent Contact Information
-   Purpose:
-   Retrieves decrypted agent contact information through a controlled
-   procedure using WITH EXECUTE AS OWNER.
-   ------------------------------------------------------------------------- */
-   CREATE OR ALTER PROCEDURE sp_GetAgentContactInfo
-    @AgentID INT = NULL
-WITH EXECUTE AS OWNER
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    OPEN SYMMETRIC KEY PIIKey 
-    DECRYPTION BY CERTIFICATE PIICert;
-
-    SELECT
-        AgentID,
-        FullName,
-        CONVERT(NVARCHAR(20), DECRYPTBYKEY(ContactNumber_Enc)) AS ContactNumber,
-        CONVERT(NVARCHAR(100), DECRYPTBYKEY(Email_Enc)) AS Email
-    FROM Agents
-    WHERE (@AgentID IS NULL OR AgentID = @AgentID);
-
-    CLOSE SYMMETRIC KEY PIIKey;
-END;
-GO
-
-
-GRANT EXECUTE ON sp_GetAgentContactInfo TO AgentOpsDev;
-GO
-
-/* -------------------------------------------------------------------------
-   11.4.2 Procedure: Register New Agent
-   Purpose:
-   Inserts a new agent and encrypts contact number and email automatically.
-   ------------------------------------------------------------------------- */
-
-   CREATE OR ALTER PROCEDURE sp_RegisterNewAgent
-    @FullName NVARCHAR(100),
-    @ContactNumber NVARCHAR(20),
-    @Email NVARCHAR(100),
-    @CommissionRate DECIMAL(5,2)
-WITH EXECUTE AS OWNER
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    IF @CommissionRate < 0 OR @CommissionRate > 100
-    BEGIN
-        RAISERROR('Commission rate must be between 0 and 100.', 16, 1);
-        RETURN;
-    END;
-
-    OPEN SYMMETRIC KEY PIIKey 
-    DECRYPTION BY CERTIFICATE PIICert;
-
-    INSERT INTO Agents
-    (
-        FullName,
-        ContactNumber,
-        Email,
-        CommissionRate,
-        ContactNumber_Enc,
-        Email_Enc
-    )
-    VALUES
-    (
-        @FullName,
-        @ContactNumber,
-        @Email,
-        @CommissionRate,
-        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @ContactNumber),
-        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @Email)
-    );
-
-    CLOSE SYMMETRIC KEY PIIKey;
-END;
-GO
-
-
-GRANT EXECUTE ON sp_RegisterNewAgent TO AgentOpsDev;
-GO
-
-/* -------------------------------------------------------------------------
-   11.4.3 Procedure: Add Transaction
-   Purpose:
-   Allows Agent Operations Development to create a transaction through a
-   controlled procedure instead of direct table access.
-   ------------------------------------------------------------------------- */
-
-   CREATE OR ALTER PROCEDURE sp_AddTransaction
-    @PropertyID INT,
-    @ClientID INT,
-    @AgentID INT,
-    @TransactionType NVARCHAR(50),
-    @Amount DECIMAL(18,2)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    INSERT INTO Transactions
-    (
-        PropertyID,
-        ClientID,
-        AgentID,
-        TransactionType,
-        Amount
-    )
-    VALUES
-    (
-        @PropertyID,
-        @ClientID,
-        @AgentID,
-        @TransactionType,
-        @Amount
-    );
-END;
-GO
-
-GRANT EXECUTE ON sp_AddTransaction TO AgentOpsDev;
-GO
-
-/* -------------------------------------------------------------------------
-   11.4.4 Procedure: Update Agent Commission
-   Purpose:
-   Allows Agent Operations Development to update commission rate through
-   a controlled procedure instead of direct table access.
-   ------------------------------------------------------------------------- */
-   CREATE OR ALTER PROCEDURE sp_UpdateAgentCommission
-    @AgentID INT,
-    @NewCommissionRate DECIMAL(5,2)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    IF @NewCommissionRate < 0 OR @NewCommissionRate > 100
-    BEGIN
-        RAISERROR('Commission rate must be between 0 and 100.', 16, 1);
-        RETURN;
-    END;
-
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM Agents
-        WHERE AgentID = @AgentID
-    )
-    BEGIN
-        RAISERROR('Agent does not exist.', 16, 1);
-        RETURN;
-    END;
-
-    UPDATE Agents
-    SET CommissionRate = @NewCommissionRate
-    WHERE AgentID = @AgentID;
-END;
-GO
-
-GRANT EXECUTE ON sp_UpdateAgentCommission TO AgentOpsDev;
-GO
-
-/* =============================================================================
-   11.5 AGENT OPERATIONS - PERFORMANCE SUMMARY VIEW
-   Purpose:
-   Provides summarized agent performance without exposing raw client PII.
-   AgentOpsDev can view agent performance through this view instead of
-   directly accessing the Agents or Transactions base tables.
-   ============================================================================= */
-
-CREATE OR ALTER VIEW vw_AgentOps_PerformanceSummary AS
-    SELECT
-        a.AgentID,
-        a.FullName AS AgentName,
-        COUNT(t.TransactionID) AS TotalTransactions,
-        ISNULL(SUM(t.Amount), 0) AS TotalTransactionAmount,
-        ISNULL(AVG(t.Amount), 0) AS AverageTransactionAmount
-    FROM Agents a
-    LEFT JOIN Transactions t
-        ON a.AgentID = t.AgentID
-    GROUP BY
-        a.AgentID,
-        a.FullName;
-GO
-
-GRANT SELECT ON vw_AgentOps_PerformanceSummary TO AgentOpsDev;
-GO
-
-
-/* =============================================================================
-   11.6 AGENT OPERATIONS - UPDATE AGENT COMMISSION PROCEDURE
-   Purpose:
-   Allows AgentOpsDev to update an agent's commission rate through a
-   controlled stored procedure instead of direct UPDATE permission on
-   the Agents table.
-   ============================================================================= */
-
-CREATE OR ALTER PROCEDURE sp_UpdateAgentCommission
-    @AgentID INT,
-    @NewCommissionRate DECIMAL(5,2)
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    IF @NewCommissionRate < 0 OR @NewCommissionRate > 100
-    BEGIN
-        RAISERROR('Commission rate must be between 0 and 100.', 16, 1);
-        RETURN;
-    END;
-
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM Agents
-        WHERE AgentID = @AgentID
-    )
-    BEGIN
-        RAISERROR('Agent does not exist.', 16, 1);
-        RETURN;
-    END;
-
-    UPDATE Agents
-    SET CommissionRate = @NewCommissionRate
-    WHERE AgentID = @AgentID;
-END;
-GO
-
-GRANT EXECUTE ON sp_UpdateAgentCommission TO AgentOpsDev;
-GO
 
 
 /* =============================================================================
@@ -1077,7 +978,7 @@ CREATE TABLE AgentCommissionHistory
 
     ChangedBy NVARCHAR(100) NOT NULL
         CONSTRAINT DF_AgentCommissionHistory_ChangedBy
-        DEFAULT SUSER_SNAME(),
+        DEFAULT ORIGINAL_LOGIN(),
 
     ChangedDate DATETIME NOT NULL
         CONSTRAINT DF_AgentCommissionHistory_ChangedDate
@@ -1121,7 +1022,7 @@ BEGIN
         i.AgentID,
         d.CommissionRate,
         i.CommissionRate,
-        SUSER_SNAME(),
+        ORIGINAL_LOGIN(),
         'Agent commission rate updated.'
     FROM inserted i
     INNER JOIN deleted d
@@ -1152,21 +1053,40 @@ GO
    all its backups at rest, so that even a stolen .mdf/.bak file is
    unreadable without the certificate - protecting everything, including
    data that was never individually flagged as sensitive.
+   Limitation: TDE support depends on SQL Server edition/version. If the lab
+   edition does not support it, document that limitation while retaining the
+   tested column-level AES-256 encryption controls.
    ============================================================================= */
 
 USE master;
+GO
+
+-- TDE certificate is stored in master. Ensure master has its own database
+-- master key first; this key is separate from GreenAcresEMS_Final's PII key.
+IF NOT EXISTS(SELECT 1 FROM sys.symmetric_keys WHERE name=N'##MS_DatabaseMasterKey##')
+    CREATE MASTER KEY ENCRYPTION BY PASSWORD='MasterTDE@2026Strong!';
 GO
 CREATE CERTIFICATE TDECert WITH SUBJECT = 'Certificate for Transparent Data Encryption - GreenAcresEMS_Final';
 GO
 
 USE GreenAcresEMS_Final;
 GO
-CREATE DATABASE ENCRYPTION KEY
-    WITH ALGORITHM = AES_256
-    ENCRYPTION BY SERVER CERTIFICATE TDECert;
-GO
+BEGIN TRY
+    CREATE DATABASE ENCRYPTION KEY
+        WITH ALGORITHM = AES_256
+        ENCRYPTION BY SERVER CERTIFICATE TDECert;
 
-ALTER DATABASE GreenAcresEMS_Final SET ENCRYPTION ON;
+    ALTER DATABASE GreenAcresEMS_Final SET ENCRYPTION ON;
+
+    PRINT 'TDE enabled successfully for GreenAcresEMS_Final.';
+END TRY
+BEGIN CATCH
+    /* TDE availability depends on the installed SQL Server edition/version.
+       A TDE failure does not weaken the separate AES-256 column encryption
+       protecting client and agent PII in Section 5. */
+    PRINT 'TDE not supported or could not be enabled on this SQL Server edition. Column-level encryption remains active.';
+    PRINT 'TDE diagnostic: ' + ERROR_MESSAGE();
+END CATCH;
 GO
 
 -- Verify TDE is active
@@ -1177,7 +1097,7 @@ GO
 /* =============================================================================
    SECTION 13: BACKUPS (Availability)
    Purpose: Full, Differential, and Transaction Log backups, plus backups of
-   BOTH certificates used above. Losing PIICert makes column-encrypted PII
+   BOTH database master keys and BOTH certificates used above. Losing PIICert makes column-encrypted PII
    permanently unrecoverable; losing TDECert makes the ENTIRE database
    permanently unrecoverable - even with a valid, otherwise-intact database
    backup file, because the decryption key would no longer exist anywhere.
@@ -1186,35 +1106,74 @@ GO
 
 BACKUP DATABASE GreenAcresEMS_Final
     TO DISK = 'C:\GreenAcresBackups\GreenAcresEMS_Final_Full.bak'
-    WITH INIT, NAME = 'GreenAcresEMS_Final-Full Database Backup';
+    WITH INIT, CHECKSUM, NAME = 'GreenAcresEMS_Final-Full Database Backup';
 GO
 
 BACKUP DATABASE GreenAcresEMS_Final
     TO DISK = 'C:\GreenAcresBackups\GreenAcresEMS_Final_Diff.bak'
-    WITH DIFFERENTIAL, NAME = 'GreenAcresEMS_Final-Differential Backup';
+    WITH DIFFERENTIAL, INIT, CHECKSUM, NAME = 'GreenAcresEMS_Final-Differential Backup';
 GO
 
 BACKUP LOG GreenAcresEMS_Final
     TO DISK = 'C:\GreenAcresBackups\GreenAcresEMS_Final_Log.trn'
-    WITH NAME = 'GreenAcresEMS_Final-Transaction Log Backup';
+    WITH INIT, CHECKSUM, NAME = 'GreenAcresEMS_Final-Transaction Log Backup';
 GO
 
-BACKUP CERTIFICATE PIICert
-    TO FILE = 'C:\GreenAcresBackups\PIICert.cer'
-    WITH PRIVATE KEY (
-        FILE = 'C:\GreenAcresBackups\PIICert.pvk',
-        ENCRYPTION BY PASSWORD = 'PIICertBackup@2026Strong!'
-    );
+-- Back up this database's DMK, which protects PIICert and the PIIKey hierarchy.
+-- Store the backup file and its password separately from the database backups.
+BEGIN TRY
+    BACKUP MASTER KEY
+        TO FILE = 'C:\GreenAcresBackups\GreenAcresEMS_Final_PII_DMK.key'
+        ENCRYPTION BY PASSWORD = 'GreenAcresPIIDMKBackup@2026Strong!';
+    PRINT 'GreenAcresEMS_Final database master key backup created successfully.';
+END TRY
+BEGIN CATCH
+    PRINT 'WARNING - GreenAcresEMS_Final master key backup was not created. Ensure the folder is writable and remove any old .key file before the final run.';
+    PRINT 'DMK backup diagnostic: ' + ERROR_MESSAGE();
+END CATCH;
+GO
+
+BEGIN TRY
+    BACKUP CERTIFICATE PIICert
+        TO FILE = 'C:\GreenAcresBackups\PIICert.cer'
+        WITH PRIVATE KEY (
+            FILE = 'C:\GreenAcresBackups\PIICert.pvk',
+            ENCRYPTION BY PASSWORD = 'PIICertBackup@2026Strong!'
+        );
+    PRINT 'PII certificate and private key backup created successfully.';
+END TRY
+BEGIN CATCH
+    PRINT 'WARNING - PIICert backup was not created. Ensure the folder is writable and remove old PIICert backup files before the final run.';
+    PRINT 'PIICert backup diagnostic: ' + ERROR_MESSAGE();
+END CATCH;
 GO
 
 USE master;
 GO
-BACKUP CERTIFICATE TDECert
-    TO FILE = 'C:\GreenAcresBackups\TDECert.cer'
-    WITH PRIVATE KEY (
-        FILE = 'C:\GreenAcresBackups\TDECert.pvk',
-        ENCRYPTION BY PASSWORD = 'TDECertBackup@2026Strong!'
-    );
+BEGIN TRY
+    BACKUP MASTER KEY
+        TO FILE='C:\GreenAcresBackups\master_TDE_DMK.key'
+        ENCRYPTION BY PASSWORD='MasterTDEBackup@2026Strong!';
+    PRINT 'master database master key backup created successfully.';
+END TRY
+BEGIN CATCH
+    PRINT 'WARNING - master database master key backup was not created. Ensure the folder is writable and remove any old .key file before the final run.';
+    PRINT 'master DMK backup diagnostic: ' + ERROR_MESSAGE();
+END CATCH;
+GO
+BEGIN TRY
+    BACKUP CERTIFICATE TDECert
+        TO FILE = 'C:\GreenAcresBackups\TDECert.cer'
+        WITH PRIVATE KEY (
+            FILE = 'C:\GreenAcresBackups\TDECert.pvk',
+            ENCRYPTION BY PASSWORD = 'TDECertBackup@2026Strong!'
+        );
+    PRINT 'TDE certificate and private key backup created successfully.';
+END TRY
+BEGIN CATCH
+    PRINT 'WARNING - TDECert backup was not created. Ensure the folder is writable and remove old TDECert backup files before the final run.';
+    PRINT 'TDECert backup diagnostic: ' + ERROR_MESSAGE();
+END CATCH;
 GO
 USE GreenAcresEMS_Final;
 GO
@@ -1287,6 +1246,10 @@ CREATE SERVER AUDIT SPECIFICATION GreenAcres_ServerAuditSpec
     WITH (STATE = ON);
 GO
 
+-- Server-scoped, read-only permission needed to review SQL Server Audit.
+GRANT VIEW SERVER SECURITY AUDIT TO security_auditor_login;
+GO
+
 USE GreenAcresEMS_Final;
 GO
 
@@ -1294,9 +1257,14 @@ CREATE DATABASE AUDIT SPECIFICATION GreenAcres_DBAuditSpec
     FOR SERVER AUDIT GreenAcres_ServerAudit
     ADD (SELECT, INSERT, UPDATE, DELETE ON dbo.Clients BY PUBLIC),
     ADD (SELECT, INSERT, UPDATE, DELETE ON dbo.Agents  BY PUBLIC),
+    ADD (SELECT, INSERT, UPDATE, DELETE ON dbo.Transactions BY PUBLIC),
+    ADD (SELECT, INSERT, UPDATE, DELETE ON dbo.MaintenanceRequests BY PUBLIC),
     ADD (UPDATE ON dbo.Properties BY PUBLIC),
     ADD (DATABASE_PERMISSION_CHANGE_GROUP),
-    ADD (DATABASE_ROLE_MEMBER_CHANGE_GROUP)
+    ADD (DATABASE_ROLE_MEMBER_CHANGE_GROUP),
+    -- Records privileged changes to database objects, including disabling,
+    -- altering or dropping an audit-protection trigger.
+    ADD (DATABASE_OBJECT_CHANGE_GROUP)
     WITH (STATE = ON);
 GO
 
@@ -1315,11 +1283,9 @@ ORDER BY event_time DESC;
 /* =============================================================================
    SECTION 15: SERVER-LEVEL LOGON TRIGGER - BONUS
    Purpose: A third, distinct trigger category alongside the DML triggers in
-   Section 16. This fires on every connection attempt to the SQL Server
-   instance (authentication events), independent of any table activity,
-   giving a lightweight running log of who connected, when, and from where -
-   complementary to the Server Audit's FAILED_LOGIN_GROUP, which records
-   failures; this trigger records every attempt, successful or not.
+   Section 16. A LOGON trigger fires after successful authentication and records
+   who connected, when and from which host. Failed authentication does not fire
+   a LOGON trigger; FAILED_LOGIN_GROUP in SQL Server Audit records failures.
    ============================================================================= */
 
 USE master;
@@ -1333,13 +1299,29 @@ CREATE TABLE dbo.LoginAudit (
 );
 GO
 
+-- A database user is required in master before object-level SELECT can be
+-- granted to the existing server login.
+CREATE USER security_auditor_login FOR LOGIN security_auditor_login;
+GO
+GRANT SELECT ON dbo.LoginAudit TO security_auditor_login;
+DENY INSERT, UPDATE, DELETE ON dbo.LoginAudit TO security_auditor_login;
+GO
+
 CREATE TRIGGER trg_LogonAudit
 ON ALL SERVER
 FOR LOGON
 AS
 BEGIN
-    INSERT INTO master.dbo.LoginAudit (LoginName, ClientHost)
-    VALUES (ORIGINAL_LOGIN(), HOST_NAME());
+    SET NOCOUNT ON;
+    -- Availability-first: a logging problem must not lock every user out of
+    -- SQL Server. SQL Server Audit remains the authoritative security trail.
+    BEGIN TRY
+        INSERT INTO master.dbo.LoginAudit(LoginName,ClientHost)
+        VALUES(ORIGINAL_LOGIN(),HOST_NAME());
+    END TRY
+    BEGIN CATCH
+        RETURN;
+    END CATCH
 END;
 GO
 
@@ -1365,96 +1347,162 @@ CREATE TABLE AuditLog (
     TableName   NVARCHAR(100),
     Operation   NVARCHAR(10),
     RecordID    INT,
-    ChangedBy   NVARCHAR(100) DEFAULT SUSER_SNAME(),
+    ChangedBy   NVARCHAR(100) DEFAULT ORIGINAL_LOGIN(),
     ChangedDate DATETIME DEFAULT GETDATE(),
     OldValue    NVARCHAR(MAX),
-    NewValue    NVARCHAR(MAX)
+    NewValue    NVARCHAR(MAX),
+    CONSTRAINT CK_AuditLog_Operation CHECK(Operation IN ('INSERT','UPDATE','DELETE'))
 );
 GO
 GRANT SELECT ON AuditLog TO DBAdminRole;
+GRANT SELECT ON AuditLog TO SecurityAuditor;
+DENY INSERT, UPDATE, DELETE ON AuditLog TO SecurityAuditor;
+GRANT SELECT ON AgentCommissionHistory TO SecurityAuditor;
+DENY INSERT, UPDATE, DELETE ON AgentCommissionHistory TO SecurityAuditor;
+GRANT VIEW DEFINITION TO SecurityAuditor;
+
+-- The auditor reviews evidence only and cannot read or modify operational PII.
+DENY SELECT, INSERT, UPDATE, DELETE ON Clients TO SecurityAuditor;
+DENY SELECT, INSERT, UPDATE, DELETE ON Agents TO SecurityAuditor;
+DENY SELECT, INSERT, UPDATE, DELETE ON Transactions TO SecurityAuditor;
+DENY INSERT, UPDATE, DELETE ON Properties TO SecurityAuditor;
+DENY INSERT, UPDATE, DELETE ON MaintenanceRequests TO SecurityAuditor;
+DENY SELECT, INSERT, UPDATE, DELETE ON Users TO SecurityAuditor;
 GO
 
--- 16.1 Auditing trigger: Properties (UPDATE)
+CREATE INDEX IX_AuditLog_Table_ChangedDate
+ON AuditLog(TableName,ChangedDate DESC);
+GO
+
+-- 16.1 Auditing trigger: Properties (full CRUD). The original trigger name is
+-- retained, while row-specific operation detection also supports MERGE batches.
 CREATE TRIGGER trg_Properties_AuditUpdate
-ON Properties AFTER UPDATE
+ON Properties AFTER INSERT, UPDATE, DELETE
 AS
 BEGIN
     SET NOCOUNT ON;
     INSERT INTO AuditLog (TableName, Operation, RecordID, OldValue, NewValue)
     SELECT
-        'Properties', 'UPDATE', i.PropertyID,
-        (SELECT d.PropertyID, d.PropertyName, d.Address, d.City, d.State, d.Price, d.Status
-         FROM deleted d WHERE d.PropertyID = i.PropertyID FOR JSON AUTO),
-        (SELECT i2.PropertyID, i2.PropertyName, i2.Address, i2.City, i2.State, i2.Price, i2.Status
-         FROM inserted i2 WHERE i2.PropertyID = i.PropertyID FOR JSON AUTO)
-    FROM inserted i JOIN deleted d ON i.PropertyID = d.PropertyID;
+        'Properties',
+        CASE WHEN i.PropertyID IS NOT NULL AND d.PropertyID IS NOT NULL THEN 'UPDATE'
+             WHEN i.PropertyID IS NOT NULL THEN 'INSERT' ELSE 'DELETE' END,
+        COALESCE(i.PropertyID,d.PropertyID),
+        CASE WHEN d.PropertyID IS NULL THEN NULL
+             ELSE CONCAT('Status=',d.Status,'; Price=',d.Price) END,
+        CASE WHEN i.PropertyID IS NULL THEN NULL
+             ELSE CONCAT('Status=',i.Status,'; Price=',i.Price) END
+    FROM inserted i
+    FULL JOIN deleted d ON i.PropertyID=d.PropertyID;
 END;
 GO
 
--- 16.2 Auditing trigger: Clients (INSERT)
+-- 16.2 Auditing trigger: Clients (INSERT/UPDATE/DELETE). The original trigger
+-- name is retained, but coverage is expanded without copying contact PII.
 CREATE TRIGGER trg_Clients_AuditInsert
-ON Clients AFTER INSERT
+ON Clients AFTER INSERT, UPDATE, DELETE
 AS
 BEGIN
     SET NOCOUNT ON;
-    INSERT INTO AuditLog (TableName, Operation, RecordID, NewValue)
-    SELECT
-        'Clients', 'INSERT', i.ClientID,
-        (SELECT i2.ClientID, i2.FullName, i2.RegisteredDate
-         FROM inserted i2 WHERE i2.ClientID = i.ClientID FOR JSON AUTO)
-    FROM inserted i;
+    DECLARE @Operation NVARCHAR(10)=
+        CASE WHEN EXISTS(SELECT 1 FROM inserted) AND EXISTS(SELECT 1 FROM deleted) THEN 'UPDATE'
+             WHEN EXISTS(SELECT 1 FROM inserted) THEN 'INSERT' ELSE 'DELETE' END;
+    INSERT INTO AuditLog(TableName,Operation,RecordID,OldValue,NewValue)
+    SELECT 'Clients',@Operation,COALESCE(i.ClientID,d.ClientID),
+           CASE WHEN d.ClientID IS NULL THEN NULL ELSE CONCAT('Name=',d.FullName) END,
+           CASE WHEN i.ClientID IS NULL THEN NULL ELSE CONCAT('Name=',i.FullName) END
+    FROM inserted i FULL JOIN deleted d ON i.ClientID=d.ClientID;
 END;
 GO
 
--- 16.3 Auditing trigger: Agents (INSERT)
+-- 16.3 Auditing trigger: Agents (INSERT/UPDATE/DELETE). Contact details and
+-- commission values are not duplicated into the general audit table.
 CREATE TRIGGER trg_Agents_AuditInsert
-ON Agents AFTER INSERT
+ON Agents AFTER INSERT, UPDATE, DELETE
 AS
 BEGIN
     SET NOCOUNT ON;
-    INSERT INTO AuditLog (TableName, Operation, RecordID, NewValue)
-    SELECT
-        'Agents', 'INSERT', i.AgentID,
-        (SELECT i2.AgentID, i2.FullName, i2.CommissionRate, i2.JoinedDate
-         FROM inserted i2 WHERE i2.AgentID = i.AgentID FOR JSON AUTO)
-    FROM inserted i;
+    DECLARE @Operation NVARCHAR(10)=
+        CASE WHEN EXISTS(SELECT 1 FROM inserted) AND EXISTS(SELECT 1 FROM deleted) THEN 'UPDATE'
+             WHEN EXISTS(SELECT 1 FROM inserted) THEN 'INSERT' ELSE 'DELETE' END;
+    INSERT INTO AuditLog(TableName,Operation,RecordID,OldValue,NewValue)
+    SELECT 'Agents',@Operation,COALESCE(i.AgentID,d.AgentID),
+           CASE WHEN d.AgentID IS NULL THEN NULL ELSE CONCAT('Name=',d.FullName,'; Commission=[PROTECTED]') END,
+           CASE WHEN i.AgentID IS NULL THEN NULL ELSE CONCAT('Name=',i.FullName,'; Commission=[PROTECTED]') END
+    FROM inserted i FULL JOIN deleted d ON i.AgentID=d.AgentID;
 END;
 GO
 
--- 16.4 Auditing trigger: Transactions (INSERT) - financially significant, always traceable
+-- 16.4 Auditing trigger: Transactions (INSERT/UPDATE/DELETE). Financial
+-- changes remain traceable while Amount is redacted from AuditLog.
 CREATE TRIGGER trg_Transactions_AuditInsert
-ON Transactions AFTER INSERT
+ON Transactions AFTER INSERT, UPDATE, DELETE
 AS
 BEGIN
     SET NOCOUNT ON;
-    INSERT INTO AuditLog (TableName, Operation, RecordID, NewValue)
-    SELECT
-        'Transactions', 'INSERT', i.TransactionID,
-        (SELECT i2.TransactionID, i2.PropertyID, i2.ClientID, i2.AgentID, i2.TransactionType, i2.Amount
-         FROM inserted i2 WHERE i2.TransactionID = i.TransactionID FOR JSON AUTO)
-    FROM inserted i;
+    DECLARE @Operation NVARCHAR(10)=
+        CASE WHEN EXISTS(SELECT 1 FROM inserted) AND EXISTS(SELECT 1 FROM deleted) THEN 'UPDATE'
+             WHEN EXISTS(SELECT 1 FROM inserted) THEN 'INSERT' ELSE 'DELETE' END;
+    INSERT INTO AuditLog(TableName,Operation,RecordID,OldValue,NewValue)
+    SELECT 'Transactions',@Operation,COALESCE(i.TransactionID,d.TransactionID),
+           CASE WHEN d.TransactionID IS NULL THEN NULL ELSE CONCAT('Type=',d.TransactionType,'; Amount=[PROTECTED]') END,
+           CASE WHEN i.TransactionID IS NULL THEN NULL ELSE CONCAT('Type=',i.TransactionType,'; Amount=[PROTECTED]') END
+    FROM inserted i FULL JOIN deleted d ON i.TransactionID=d.TransactionID;
 END;
 GO
 
--- 16.5 Operational trigger: auto-update Property status on a new transaction
+-- 16.5 Auditing trigger: MaintenanceRequests (full CRUD). RequestDetails is
+-- intentionally excluded so free-text operational content is not duplicated
+-- into a differently governed audit store.
+CREATE TRIGGER trg_MaintenanceRequests_Audit
+ON MaintenanceRequests AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT INTO AuditLog(TableName,Operation,RecordID,OldValue,NewValue)
+    SELECT 'MaintenanceRequests',
+           CASE WHEN i.RequestID IS NOT NULL AND d.RequestID IS NOT NULL THEN 'UPDATE'
+                WHEN i.RequestID IS NOT NULL THEN 'INSERT' ELSE 'DELETE' END,
+           COALESCE(i.RequestID,d.RequestID),
+           CASE WHEN d.RequestID IS NULL THEN NULL ELSE CONCAT('Status=',d.Status) END,
+           CASE WHEN i.RequestID IS NULL THEN NULL ELSE CONCAT('Status=',i.Status) END
+    FROM inserted i
+    FULL JOIN deleted d ON i.RequestID=d.RequestID;
+END;
+GO
+
+-- Bonus integrity control: audit history is append-only for ordinary users.
+-- A sysadmin can still disable the trigger, so this is described as DML tamper
+-- resistance rather than absolute immutability. DATABASE_OBJECT_CHANGE_GROUP
+-- in Section 14 records privileged attempts to alter or disable this control.
+CREATE TRIGGER trg_AuditLog_AppendOnly
+ON AuditLog
+INSTEAD OF UPDATE, DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    THROW 50060, 'AuditLog is append-only; UPDATE and DELETE are prohibited.', 1;
+END;
+GO
+
+-- 16.6 Operational trigger: auto-update Property status on a new transaction
 CREATE TRIGGER trg_Transaction_UpdatePropertyStatus
 ON Transactions AFTER INSERT
 AS
 BEGIN
     SET NOCOUNT ON;
     UPDATE p
-    SET p.Status = 'Sold', p.ModifiedDate = GETDATE(), p.ModifiedBy = SUSER_SNAME()
+    SET p.Status = 'Sold', p.ModifiedDate = GETDATE(), p.ModifiedBy = ORIGINAL_LOGIN()
     FROM Properties p JOIN inserted i ON p.PropertyID = i.PropertyID
     WHERE i.TransactionType = 'Sale';
 
     UPDATE p
-    SET p.Status = 'Rented', p.ModifiedDate = GETDATE(), p.ModifiedBy = SUSER_SNAME()
+    SET p.Status = 'Rented', p.ModifiedDate = GETDATE(), p.ModifiedBy = ORIGINAL_LOGIN()
     FROM Properties p JOIN inserted i ON p.PropertyID = i.PropertyID
     WHERE i.TransactionType = 'Rent';
 END;
 GO
 
--- 16.6 Operational trigger: block maintenance requests on a Sold property
+-- 16.7 Operational trigger: block maintenance requests on a Sold property
 CREATE TRIGGER trg_MaintenanceRequest_PreventOnSoldProperty
 ON MaintenanceRequests INSTEAD OF INSERT
 AS
@@ -1486,12 +1534,10 @@ GO
    access than intended.
    ============================================================================= */
 
--- Step 1: Drop the existing policy (it depends on the function, so must go first)
-DROP SECURITY POLICY TransactionAccessPolicy;
-GO
-
--- Step 2: Now alter the function to include AgentOpsDev
-ALTER FUNCTION dbo.fn_TransactionAccessPredicate(@AgentID INT)
+-- Create the predicate before the policy so a fresh database build succeeds.
+-- This is role-based row visibility: eligible roles see rows; other users see
+-- none. It is defence in depth beneath the normal view/procedure permissions.
+CREATE FUNCTION dbo.fn_TransactionAccessPredicate(@AgentID INT)
 RETURNS TABLE
 WITH SCHEMABINDING
 AS
@@ -1502,9 +1548,9 @@ RETURN SELECT 1 AS AccessResult
           OR USER_NAME() = 'dbo';
 GO
 
--- Step 3: Recreate the policy pointing at the updated function
 CREATE SECURITY POLICY TransactionAccessPolicy
-    ADD FILTER PREDICATE dbo.fn_TransactionAccessPredicate(AgentID) ON dbo.Transactions
+    ADD FILTER PREDICATE dbo.fn_TransactionAccessPredicate(AgentID) ON dbo.Transactions,
+    ADD BLOCK PREDICATE dbo.fn_TransactionAccessPredicate(AgentID) ON dbo.Transactions AFTER INSERT
     WITH (STATE = ON);
 GO
 
@@ -1526,77 +1572,18 @@ SELECT
 FROM sys.database_permissions perm
 JOIN sys.database_principals dp ON perm.grantee_principal_id = dp.principal_id
 WHERE dp.type = 'R'
-  AND dp.name IN ('PropertyMgmtDev','ClientPortalDev','AnalyticsTeam','DBAdminRole','AgentOpsDev')
+  AND dp.name IN ('PropertyMgmtDev','ClientPortalDev','AnalyticsTeam','DBAdminRole','AgentOpsDev','SecurityAuditor')
 GROUP BY dp.name
 ORDER BY dp.name;
 GO
 
 
 /* =============================================================================
-   SECTION 19: VERIFICATION - FULL PER-DEPARTMENT ACCESS TEST
-   Purpose: Prove every role can use its Views/Procedures but is denied
-   direct table access. Run each block separately in your own SSMS session
-   and observe the results (marked WORKS / DENIED for what to expect).
+   SECTION 19: VERIFICATION TESTS
+   The original embedded tests were moved to DBS_TestCases_Group_19.sql.
+   Keeping expected permission failures outside the implementation prevents
+   them from interrupting a clean build and makes test evidence repeatable.
    ============================================================================= */
-
--- 19.1 Client Portal Development (Sehneel Ansari)
-REVERT;
-EXECUTE AS USER = 'sehneel_ansari_login';
-SELECT * FROM vw_ClientPortal_Clients;                          -- WORKS
-EXEC sp_GetClientContactInfo;                                   -- WORKS: decrypted PII
-EXEC sp_RegisterNewClient @FullName='Verification Client', @ContactNumber='019-0000001', @Email='verify1@gmail.com', @Address='1 Jalan Verify, Shah Alam';  -- WORKS
-SELECT * FROM Clients;                                          -- DENIED
-REVERT;
-
--- 19.2 Property Management Development (Izzah Zulkafli)
-EXECUTE AS USER = 'izzah_zulkafli_login';
-SELECT * FROM vw_PropertyMgmt_Properties;                       -- WORKS
-SELECT * FROM vw_PropertyMgmt_MaintenanceRequests;               -- WORKS
-EXEC sp_UpdatePropertyStatus @PropertyID=3, @NewStatus='Rented'; -- WORKS
-SELECT * FROM Properties;                                       -- DENIED
-REVERT;
-
--- 19.3 Analytics (Priya Suhuba)
-EXECUTE AS USER = 'priya_suhuba_login';
-SELECT * FROM vw_Analytics_ClientSummary;                        -- WORKS: masked PII visible
-SELECT * FROM vw_Analytics_AgentPerformance;                     -- WORKS: masked email, real aggregates
-SELECT * FROM Clients;                                           -- DENIED
-REVERT;
-
--- 19.4 Database Administration (Imran Amir)
-EXECUTE AS USER = 'imran_amir_login';
-SELECT ClientID, FullName, ContactNumber, Email, Address FROM Clients;  -- WORKS: real unmasked PII
-SELECT * FROM Users;                                             -- WORKS: full access, but PasswordHash still unreadable
-REVERT;
-
--- 19.5 Agent Operations Development (Lim Jia Hui)
-USE GreenAcresEMS_Final;
-GO
-EXECUTE AS USER = 'limjiahui_login';
-SELECT * FROM vw_AgentOps_Agents; 
--- WORKS
-SELECT* FROM vw_AgentOps_Transactions;
---WORKS
-SELECT*FROM vw_AgentOps_PerformanceSummary;
---WORKS
-EXEC sp_GetAgentContactInfo; 
--- WORKS: decrypted PII
-EXEC sp_RegisterNewAgent
-    @FullName = 'Verification Agent',
-    @ContactNumber = '019-2223333',
-    @Email = 'verify.agent@greenacres.com',
-    @CommissionRate = 3.20;
-EXEC sp_UpdateAgentCommission
-    @AgentID = 1,
-    @NewCommissionRate = 3.80;
-SELECT * FROM AgentCommissionHistory;
-
-SELECT * FROM Agents;   
--- DENIED
-SELECT * FROM Clients;
---DENIED
-REVERT;
-GO
 
 
 /* =============================================================================
@@ -1619,7 +1606,8 @@ LEFT JOIN (
     JOIN sys.indexes i ON ic.object_id = i.object_id AND ic.index_id = i.index_id
     WHERE i.is_primary_key = 1
 ) pk ON c.object_id = pk.object_id AND c.column_id = pk.column_id
-WHERE t.name IN ('Properties','Clients','Agents','Transactions','MaintenanceRequests','Departments','Users','AuditLog')
+WHERE t.name IN ('Properties','Clients','Agents','Transactions','MaintenanceRequests',
+                 'Departments','Users','AgentCommissionHistory','AuditLog')
 ORDER BY t.name, c.column_id;
 GO
 
@@ -1652,26 +1640,55 @@ LEFT JOIN sys.objects o
 WHERE dp.name = 'AgentOpsDev'
 ORDER BY o.name, perm.permission_name;
 GO
-/* =============================================================================
-   SECTION 21: FINAL BACKUP
-   Purpose: Take one last backup reflecting the fully completed database,
-   after every section including TDE, Triggers, and Auditing has been
-   applied.
-   ============================================================================= */
 
-BACKUP DATABASE GreenAcresEMS_Final
-    TO DISK = 'C:\GreenAcresBackups\GreenAcresEMS_Final_Final_Full.bak'
-    WITH INIT, NAME = 'GreenAcresEMS_Final-Final Submission Backup';
+-- 20.4 Data Protection Coverage Summary
+-- Quantifies implemented controls for report evidence. Classification metadata
+-- is queried dynamically only where the catalog view is supported.
+DECLARE @CoverageMajorVersion INT =
+    CAST(SERVERPROPERTY('ProductMajorVersion') AS INT);
+
+IF @CoverageMajorVersion >= 15
+BEGIN
+    EXEC sys.sp_executesql N'
+        SELECT
+            (SELECT COUNT(*) FROM sys.masked_columns) AS MaskedColumns,
+            (SELECT COUNT(*) FROM sys.sensitivity_classifications) AS ClassifiedColumns,
+            (SELECT COUNT(*)
+             FROM sys.columns
+             WHERE object_id IN (OBJECT_ID(''dbo.Clients''),OBJECT_ID(''dbo.Agents''))
+               AND name IN (''ContactNumber_Enc'',''Email_Enc'',''Address_Enc''))
+                AS DefinedEncryptedColumns,
+            (SELECT is_encrypted
+             FROM sys.databases
+             WHERE name=''GreenAcresEMS_Final'') AS TDEActive,
+            CAST(''SQL Server sensitivity classification supported'' AS NVARCHAR(100))
+                AS ClassificationStatus;
+    ';
+END
+ELSE
+BEGIN
+    SELECT
+        (SELECT COUNT(*) FROM sys.masked_columns) AS MaskedColumns,
+        CAST(NULL AS INT) AS ClassifiedColumns,
+        (SELECT COUNT(*)
+         FROM sys.columns
+         WHERE object_id IN (OBJECT_ID('dbo.Clients'),OBJECT_ID('dbo.Agents'))
+           AND name IN ('ContactNumber_Enc','Email_Enc','Address_Enc'))
+            AS DefinedEncryptedColumns,
+        (SELECT is_encrypted
+         FROM sys.databases
+         WHERE name='GreenAcresEMS_Final') AS TDEActive,
+        CAST('Sensitivity classification unavailable below SQL Server 2019'
+             AS NVARCHAR(100)) AS ClassificationStatus;
+END;
 GO
 
-
 /* =============================================================================
-   SECTION 22: CLIENT EMAIL HASHING [BONUS]
+   SECTION 21: CLIENT EMAIL HASHING [BONUS]
    Purpose: A second, distinct application of hashing beyond passwords.
    Stores a one-way hash of each client's normalized email, enabling
    duplicate-email detection at registration WITHOUT needing to compare
-   plaintext emails directly. Uses a "pepper" - a fixed secret value known
-   only to the application (not stored in the database), combined with the
+   plaintext emails directly. Uses a demonstration pepper combined with the
    email before hashing - which is a different technique from the salted
    password hashing in Section 3 (there, each user gets a unique random
    salt; here, the same pepper is deliberately reused so that hashes of
@@ -1682,38 +1699,51 @@ GO
 USE GreenAcresEMS_Final;
 GO
 
--- 22.1: Add the EmailHash column to Clients
+-- 20.5 Security Auditor permission evidence
+SELECT dp.name AS RoleOrUser,
+       ISNULL(o.name,'Database-level permission') AS ObjectName,
+       o.type_desc AS ObjectType,
+       perm.permission_name AS Permission,
+       perm.state_desc AS GrantOrDeny
+FROM sys.database_permissions perm
+JOIN sys.database_principals dp ON perm.grantee_principal_id=dp.principal_id
+LEFT JOIN sys.objects o ON perm.major_id=o.object_id
+WHERE dp.name='SecurityAuditor'
+ORDER BY o.name,perm.permission_name;
+GO
+
+-- Single source of truth for normalization and hashing. In production, the
+-- pepper should be kept outside the database in a secret manager; it is inside
+-- this function only so the assignment remains self-contained and testable.
+CREATE FUNCTION dbo.fn_GetClientEmailHash(@Email NVARCHAR(100))
+RETURNS VARBINARY(32)
+WITH SCHEMABINDING
+AS
+BEGIN
+    IF @Email IS NULL RETURN NULL;
+    RETURN HASHBYTES('SHA2_256',CONVERT(VARBINARY(MAX),
+           N'GreenAcresPepper2026'+LOWER(LTRIM(RTRIM(@Email)))));
+END;
+GO
+
+-- 21.1: Add the EmailHash column to Clients
 ALTER TABLE Clients ADD EmailHash VARBINARY(32) NULL;
 GO
 
--- 22.2: Backfill EmailHash for existing clients
+-- 21.2: Backfill EmailHash for existing clients
 -- Normalization: lowercase + trim, so 'John@Gmail.com' and 'john@gmail.com '
 -- are treated as the same email for duplicate-detection purposes.
 UPDATE Clients
-SET EmailHash = HASHBYTES('SHA2_256', LOWER(LTRIM(RTRIM(Email))) + 'GreenAcresPepper2026')
+SET EmailHash = dbo.fn_GetClientEmailHash(Email)
 WHERE Email IS NOT NULL;
 GO
 
--- 22.2b: Fix - two pairs of existing test/demo records shared the same
--- email (from earlier repeated testing), which would violate the unique
--- index below. Rename the newer duplicate of each pair to keep both rows
--- as valid history while making every email genuinely unique.
-UPDATE Clients SET Email = 'injection.test.2@gmail.com' WHERE ClientID = 16;
-UPDATE Clients SET Email = 'verify1.b@gmail.com' WHERE ClientID = 12;
-GO
-
--- Recompute EmailHash for the two renamed rows so it matches their new email
-UPDATE Clients
-SET EmailHash = HASHBYTES('SHA2_256', LOWER(LTRIM(RTRIM(Email))) + 'GreenAcresPepper2026')
-WHERE Email IS NOT NULL;
-GO
-
--- 22.3: Add a unique index on EmailHash so the database itself enforces
+-- 21.3: Add a unique index on EmailHash so the database itself enforces
 -- no two clients can ever share the same normalized email
 CREATE UNIQUE INDEX UX_Clients_EmailHash ON Clients(EmailHash) WHERE EmailHash IS NOT NULL;
 GO
 
--- 22.4: Update sp_RegisterNewClient to compute EmailHash and check for
+-- 21.4: Update sp_RegisterNewClient to compute EmailHash and check for
 -- duplicates BEFORE inserting, with a clear error message rather than
 -- letting it fail on the unique index alone
 ALTER PROCEDURE sp_RegisterNewClient
@@ -1726,27 +1756,45 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    DECLARE @EmailHash VARBINARY(32) = HASHBYTES('SHA2_256', LOWER(LTRIM(RTRIM(@Email))) + 'GreenAcresPepper2026');
+    DECLARE @EmailHash VARBINARY(32)=dbo.fn_GetClientEmailHash(@Email);
 
-    IF EXISTS (SELECT 1 FROM Clients WHERE EmailHash = @EmailHash)
-    BEGIN
-        RAISERROR('A client with this email address is already registered.', 16, 1);
-        RETURN;
-    END
+    IF @EmailHash IS NULL THROW 50070, 'Email is required.', 1;
+    IF EXISTS(SELECT 1 FROM Clients WHERE EmailHash=@EmailHash)
+        THROW 50071, 'A client with this email address is already registered.', 1;
 
-    OPEN SYMMETRIC KEY PIIKey DECRYPTION BY CERTIFICATE PIICert;
-    INSERT INTO Clients (FullName, ContactNumber, Email, Address, ContactNumber_Enc, Email_Enc, Address_Enc, EmailHash)
-    VALUES (
-        @FullName, @ContactNumber, @Email, @Address,
-        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @ContactNumber),
-        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @Email),
-        ENCRYPTBYKEY(KEY_GUID('PIIKey'), @Address),
-        @EmailHash
-    );
-    CLOSE SYMMETRIC KEY PIIKey;
+    BEGIN TRY
+        OPEN SYMMETRIC KEY PIIKey DECRYPTION BY CERTIFICATE PIICert;
+        INSERT INTO Clients(FullName,ContactNumber,Email,Address,
+                            ContactNumber_Enc,Email_Enc,Address_Enc,EmailHash)
+        VALUES(@FullName,@ContactNumber,@Email,@Address,
+               ENCRYPTBYKEY(KEY_GUID('PIIKey'),@ContactNumber),
+               ENCRYPTBYKEY(KEY_GUID('PIIKey'),@Email),
+               ENCRYPTBYKEY(KEY_GUID('PIIKey'),@Address),@EmailHash);
+        CLOSE SYMMETRIC KEY PIIKey;
+    END TRY
+    BEGIN CATCH
+        IF EXISTS(SELECT 1 FROM sys.openkeys WHERE key_name=N'PIIKey')
+            CLOSE SYMMETRIC KEY PIIKey;
+        THROW;
+    END CATCH
 END;
 GO
 
--- 22.5: Verify - EmailHash shows unreadable binary for all existing clients
+-- 21.5: Verify - EmailHash shows unreadable binary for all existing clients
 SELECT ClientID, FullName, Email, EmailHash FROM Clients;
 GO
+
+
+/* =============================================================================
+   SECTION 22: FINAL BACKUP
+   Taken after every permission, trigger, audit and bonus control so the final
+   submission backup reflects the complete implementation.
+   ============================================================================= */
+BACKUP DATABASE GreenAcresEMS_Final
+    TO DISK='C:\GreenAcresBackups\GreenAcresEMS_Final_Final_Full.bak'
+    WITH INIT,CHECKSUM,NAME='GreenAcresEMS_Final-Final Submission Backup';
+GO
+
+/* =============================================================================
+   END OF GROUP 19 IMPLEMENTATION
+   ============================================================================= */
