@@ -241,21 +241,48 @@ BEGIN CATCH
 END CATCH;
 GO
 
--- TC-B5: Five failures lock the account; DBA recovery unlocks it.
-EXEC sp_UnlockAppUser @Username='izzah.zulkafli';
-DECLARE @Attempt INT=0,@Valid BIT;
-WHILE @Attempt<5
-BEGIN
-    EXEC sp_VerifyAppUserLogin @Username='izzah.zulkafli',@PlaintextPassword='WrongPassword123!',@IsValid=@Valid OUTPUT;
-    SET @Attempt+=1;
-END;
-SELECT 'TC-B5a Account lockout' AS TestCase,FailedLoginCount,IsActive,
-       CASE WHEN FailedLoginCount=5 AND IsActive=0 THEN 'PASS' ELSE 'FAIL' END AS Result
-FROM Users WHERE Username='izzah.zulkafli';
-EXEC sp_UnlockAppUser @Username='izzah.zulkafli';
-SELECT 'TC-B5b Account recovery' AS TestCase,FailedLoginCount,IsActive,
-       CASE WHEN FailedLoginCount=0 AND IsActive=1 THEN 'PASS' ELSE 'FAIL' END AS Result
-FROM Users WHERE Username='izzah.zulkafli';
+-- TC-B5: Five failures lock the account; DBAdminRole recovery unlocks it.
+-- Requires: GRANT EXECUTE ON sp_UnlockAppUser TO DBAdminRole in implementation.
+BEGIN TRY
+    EXEC sp_UnlockAppUser @Username='izzah.zulkafli';
+
+    DECLARE @Attempt INT=0,@Valid BIT;
+    WHILE @Attempt<5
+    BEGIN
+        EXEC sp_VerifyAppUserLogin
+             @Username='izzah.zulkafli',
+             @PlaintextPassword='WrongPassword123!',
+             @IsValid=@Valid OUTPUT;
+        SET @Attempt+=1;
+    END;
+
+    SELECT 'TC-B5a Account lockout' AS TestCase,FailedLoginCount,IsActive,
+           CASE WHEN FailedLoginCount=5 AND IsActive=0 THEN 'PASS' ELSE 'FAIL' END AS Result
+    FROM Users WHERE Username='izzah.zulkafli';
+
+    EXECUTE AS USER='imran_amir_login';
+    EXEC sp_UnlockAppUser @Username='izzah.zulkafli';
+    REVERT;
+
+    SELECT 'TC-B5b DBAdminRole account recovery' AS TestCase,FailedLoginCount,IsActive,
+           CASE WHEN FailedLoginCount=0 AND IsActive=1 THEN 'PASS' ELSE 'FAIL' END AS Result
+    FROM Users WHERE Username='izzah.zulkafli';
+END TRY
+BEGIN CATCH
+    DECLARE @B5Error NVARCHAR(4000)=ERROR_MESSAGE();
+    IF USER_NAME()<>'dbo' REVERT;
+
+    -- Cleanup prevents the demonstration account remaining locked after failure.
+    BEGIN TRY
+        EXEC sp_UnlockAppUser @Username='izzah.zulkafli';
+    END TRY
+    BEGIN CATCH
+        SET @B5Error=CONCAT(@B5Error,' | Cleanup warning: ',ERROR_MESSAGE());
+    END CATCH;
+
+    SELECT 'TC-B5 Account lockout and DBAdminRole recovery' AS TestCase,
+           'FAIL' AS Result,@B5Error AS Evidence;
+END CATCH;
 GO
 
 /* =============================================================================
@@ -286,9 +313,23 @@ BEGIN CATCH
 END CATCH;
 GO
 
--- TC-C3: TDE bonus status (1 when supported and enabled by the lab edition).
-SELECT name,is_encrypted,CASE WHEN is_encrypted=1 THEN 'PASS' ELSE 'CHECK EDITION/LIMITATION' END AS Result
-FROM sys.databases WHERE name='GreenAcresEMS_Final';
+-- TC-C3: TDE is enabled and has reached the fully encrypted state.
+SELECT d.name,d.is_encrypted,dek.encryption_state,
+       CASE dek.encryption_state
+           WHEN 0 THEN 'No database encryption key'
+           WHEN 1 THEN 'Unencrypted'
+           WHEN 2 THEN 'Encryption in progress'
+           WHEN 3 THEN 'Encrypted'
+           WHEN 4 THEN 'Key change in progress'
+           WHEN 5 THEN 'Decryption in progress'
+           WHEN 6 THEN 'Protection change in progress'
+       END AS EncryptionStateDescription,
+       CASE WHEN d.is_encrypted=1 AND dek.encryption_state=3
+            THEN 'PASS' ELSE 'CHECK EDITION OR ENCRYPTION STATE' END AS Result
+FROM sys.databases d
+LEFT JOIN sys.dm_database_encryption_keys dek
+       ON d.database_id=dek.database_id
+WHERE d.name='GreenAcresEMS_Final';
 GO
 
 -- TC-C4: Functional proof that every ciphertext value decrypts to its
@@ -477,7 +518,7 @@ BEGIN CATCH
 END CATCH;
 GO
 
--- TC-F2/F3/F4: Client, Agent and Transaction INSERT triggers are set-based.
+-- TC-F2/F3/F4: Client, Agent and Transaction INSERT auditing.
 BEGIN TRY
     BEGIN TRANSACTION;
     DECLARE @FStartAuditID INT=ISNULL((SELECT MAX(AuditID) FROM AuditLog),0);
@@ -486,6 +527,17 @@ BEGIN TRY
     EXEC sp_RegisterNewAgent @FullName='Test Agent F3',@ContactNumber='019-2222222',@Email='f3@test.com',@CommissionRate=2.00;
     EXEC sp_AddTransaction @PropertyID=5,@ClientID=1,@AgentID=2,@TransactionType='Rent',@Amount=2000;
     SELECT * FROM AuditLog WHERE TableName IN('Clients','Agents','Transactions') ORDER BY AuditID DESC;
+
+    DECLARE @F234AuditedTables INT;
+    SELECT @F234AuditedTables=COUNT(DISTINCT TableName)
+    FROM AuditLog
+    WHERE AuditID>@FStartAuditID
+      AND TableName IN('Clients','Agents','Transactions')
+      AND Operation='INSERT';
+
+    SELECT 'TC-F2/F3/F4 Insert audits' AS TestCase,
+           @F234AuditedTables AS AuditedTables,
+           CASE WHEN @F234AuditedTables=3 THEN 'PASS' ELSE 'FAIL' END AS Result;
 
     -- TC-F6: Literal [PROTECTED] markers must be present in every non-NULL
     -- Agent/Transaction audit value. '[[]' matches a literal opening bracket.
@@ -523,7 +575,6 @@ BEGIN TRY
                 THEN 'PASS' ELSE 'FAIL' END AS Result;
 
     ROLLBACK TRANSACTION;
-    SELECT 'TC-F2/F3/F4 Insert audits' AS TestCase,'PASS' AS Result;
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT>0 ROLLBACK TRANSACTION;
@@ -596,31 +647,75 @@ GO
 
 -- TC-G2: Maintenance on a Sold property is rejected.
 BEGIN TRY
+    BEGIN TRANSACTION;
     EXEC sp_AddMaintenanceRequest @PropertyID=2,@RequestDetails='Should be rejected';
+    ROLLBACK TRANSACTION;
     SELECT 'TC-G2 Sold maintenance rejected' AS TestCase,'FAIL' AS Result;
 END TRY
 BEGIN CATCH
+    IF @@TRANCOUNT>0 ROLLBACK TRANSACTION;
     SELECT 'TC-G2 Sold maintenance rejected' AS TestCase,'PASS' AS Result,ERROR_MESSAGE() AS Evidence;
 END CATCH;
 GO
 
 -- TC-G3: Commission update generates history; rollback keeps test repeatable.
-BEGIN TRANSACTION;
-EXEC sp_UpdateAgentCommission @AgentID=1,@NewCommissionRate=2.75;
-SELECT TOP(1) 'TC-G3 Commission history' AS TestCase,* FROM AgentCommissionHistory
-WHERE AgentID=1 ORDER BY CommissionHistoryID DESC;
-ROLLBACK TRANSACTION;
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    DECLARE @G3StartID INT=ISNULL((SELECT MAX(CommissionHistoryID)
+                                   FROM AgentCommissionHistory),0),
+            @G3OldRate DECIMAL(5,2),
+            @G3NewRate DECIMAL(5,2);
+
+    SELECT @G3OldRate=CommissionRate FROM Agents WHERE AgentID=1;
+    SET @G3NewRate=CASE WHEN @G3OldRate=2.75 THEN 2.80 ELSE 2.75 END;
+
+    EXEC sp_UpdateAgentCommission @AgentID=1,@NewCommissionRate=@G3NewRate;
+
+    SELECT 'TC-G3 Commission history' AS TestCase,
+           COUNT(*) AS HistoryRows,
+           CASE WHEN COUNT(*)=1 THEN 'PASS' ELSE 'FAIL' END AS Result
+    FROM AgentCommissionHistory
+    WHERE CommissionHistoryID>@G3StartID
+      AND AgentID=1
+      AND OldCommissionRate=@G3OldRate
+      AND NewCommissionRate=@G3NewRate;
+
+    ROLLBACK TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT>0 ROLLBACK TRANSACTION;
+    SELECT 'TC-G3 Commission history' AS TestCase,'FAIL' AS Result,
+           ERROR_MESSAGE() AS Evidence;
+END CATCH;
 GO
 
 /* =============================================================================
    GROUP H: LOGON TRIGGER [BONUS - MANUAL]
    =============================================================================
-   TC-H1: Open a new successful SSMS connection, then run the query below.
-   The trigger records successful logons only; failed logins are in Group I. */
-SELECT TOP(20) * FROM master.dbo.LoginAudit ORDER BY LoginTime DESC;
-SELECT 'TC-H1 Successful logon captured' AS TestCase,COUNT(*) AS CapturedLogons,
-       CASE WHEN COUNT(*)>0 THEN 'PASS' ELSE 'MANUAL CHECK: reconnect, then rerun TC-H1' END AS Result
-FROM master.dbo.LoginAudit;
+ 
+ TC-H1:
+   Connect successfully using sehneel_ansari_login before running this test.
+   Expected: at least one matching logon record. */
+
+SELECT TOP (20)
+    LoginAuditID,
+    LoginName,
+    LoginTime,
+    ClientHost
+FROM master.dbo.LoginAudit
+WHERE LoginName = 'sehneel_ansari_login'
+ORDER BY LoginAuditID DESC;
+
+SELECT
+    'TC-H1 Developer SQL login captured' AS TestCase,
+    COUNT(*) AS CapturedLogons,
+    CASE
+        WHEN COUNT(*) > 0 THEN 'PASS'
+        ELSE 'FAIL - connect using sehneel_ansari_login first'
+    END AS Result
+FROM master.dbo.LoginAudit
+WHERE LoginName = 'sehneel_ansari_login';
 GO
 
 /* =============================================================================
@@ -649,9 +744,37 @@ BEGIN CATCH
 END CATCH;
 GO
 
-/* TC-I2 [MANUAL]: Open a new SQL-authentication connection with an incorrect
-   password for izzah_zulkafli_login. Then filter the audit file for action_id
-   LGIF. Expected: succeeded=0. A failed login will not appear in LoginAudit. */
+/* TC-I2 [MANUAL]: First open a new SQL-authentication connection with an
+   incorrect password for izzah_zulkafli_login. A failed login will not appear
+   in LoginAudit because the LOGON trigger fires only after authentication. */
+BEGIN TRY
+    SELECT TOP(20) event_time,action_id,succeeded,server_principal_name,
+           client_ip,statement
+    FROM sys.fn_get_audit_file('C:\GreenAcresAudits\*.sqlaudit',DEFAULT,DEFAULT)
+    WHERE action_id='LGIF'
+      AND succeeded=0
+      AND (server_principal_name='izzah_zulkafli_login'
+           OR statement LIKE '%izzah_zulkafli_login%')
+    ORDER BY event_time DESC;
+
+    DECLARE @I2Events INT;
+    SELECT @I2Events=COUNT(*)
+    FROM sys.fn_get_audit_file('C:\GreenAcresAudits\*.sqlaudit',DEFAULT,DEFAULT)
+    WHERE action_id='LGIF'
+      AND succeeded=0
+      AND (server_principal_name='izzah_zulkafli_login'
+           OR statement LIKE '%izzah_zulkafli_login%');
+
+    SELECT 'TC-I2 Failed login audit evidence' AS TestCase,@I2Events AS MatchingEvents,
+           CASE WHEN @I2Events>0 THEN 'PASS'
+                ELSE 'MANUAL STEP REQUIRED: attempt an incorrect login, then rerun TC-I2'
+           END AS Result;
+END TRY
+BEGIN CATCH
+    SELECT 'TC-I2 Failed login audit evidence' AS TestCase,'FAIL' AS Result,
+           ERROR_MESSAGE() AS Evidence;
+END CATCH;
+GO
 
 /* =============================================================================
    GROUP J: BACKUPS AND RESTORE
@@ -663,6 +786,17 @@ SELECT database_name,backup_start_date,backup_finish_date,
        has_backup_checksums
 FROM msdb.dbo.backupset WHERE database_name='GreenAcresEMS_Final'
 ORDER BY backup_start_date DESC;
+GO
+
+SELECT 'TC-J1 Backup coverage' AS TestCase,
+       COUNT(DISTINCT type) AS BackupTypesFound,
+       MIN(CASE WHEN has_backup_checksums=1 THEN 1 ELSE 0 END) AS AllHaveChecksums,
+       CASE WHEN COUNT(DISTINCT type)=3
+                  AND MIN(CASE WHEN has_backup_checksums=1 THEN 1 ELSE 0 END)=1
+            THEN 'PASS' ELSE 'FAIL' END AS Result
+FROM msdb.dbo.backupset
+WHERE database_name='GreenAcresEMS_Final'
+  AND type IN('D','I','L');
 GO
 
 /* TC-J2 [MANUAL]: Safe restore validation.
@@ -678,31 +812,40 @@ GO
 
 -- TC-K1: Negative property price rejected.
 BEGIN TRY
+    BEGIN TRANSACTION;
     INSERT INTO Properties(PropertyName,Address,City,State,Price,Status)
     VALUES('Invalid Price','1 Test','KL','WP',-500,'Available');
+    ROLLBACK TRANSACTION;
     SELECT 'TC-K1 Negative price' AS TestCase,'FAIL' AS Result;
 END TRY
 BEGIN CATCH
+    IF @@TRANCOUNT>0 ROLLBACK TRANSACTION;
     SELECT 'TC-K1 Negative price' AS TestCase,'PASS' AS Result,ERROR_MESSAGE() AS Evidence;
 END CATCH;
 
 -- TC-K2: Invalid property status rejected.
 BEGIN TRY
+    BEGIN TRANSACTION;
     INSERT INTO Properties(PropertyName,Address,City,State,Price,Status)
     VALUES('Invalid Status','1 Test','KL','WP',500000,'Unavailable');
+    ROLLBACK TRANSACTION;
     SELECT 'TC-K2 Invalid status' AS TestCase,'FAIL' AS Result;
 END TRY
 BEGIN CATCH
+    IF @@TRANCOUNT>0 ROLLBACK TRANSACTION;
     SELECT 'TC-K2 Invalid status' AS TestCase,'PASS' AS Result,ERROR_MESSAGE() AS Evidence;
 END CATCH;
 
 -- TC-K3: Invalid commission rejected.
 BEGIN TRY
+    BEGIN TRANSACTION;
     INSERT INTO Agents(FullName,ContactNumber,Email,CommissionRate)
     VALUES('Invalid Commission','019-0000000','invalid@test.com',150);
+    ROLLBACK TRANSACTION;
     SELECT 'TC-K3 Invalid commission' AS TestCase,'FAIL' AS Result;
 END TRY
 BEGIN CATCH
+    IF @@TRANCOUNT>0 ROLLBACK TRANSACTION;
     SELECT 'TC-K3 Invalid commission' AS TestCase,'PASS' AS Result,ERROR_MESSAGE() AS Evidence;
 END CATCH;
 GO
@@ -754,11 +897,14 @@ GO
 
 -- TC-N2: Duplicate normalized email is rejected with a controlled error.
 BEGIN TRY
+    BEGIN TRANSACTION;
     EXEC sp_RegisterNewClient @FullName='Duplicate Test',@ContactNumber='019-4444444',
          @Email=' LEON.KENNEDY@GMAIL.COM ',@Address='Duplicate Address';
+    ROLLBACK TRANSACTION;
     SELECT 'TC-N2 Duplicate email' AS TestCase,'FAIL' AS Result;
 END TRY
 BEGIN CATCH
+    IF @@TRANCOUNT>0 ROLLBACK TRANSACTION;
     SELECT 'TC-N2 Duplicate email' AS TestCase,'PASS' AS Result,ERROR_MESSAGE() AS Evidence;
 END CATCH;
 GO
