@@ -1307,21 +1307,28 @@ GRANT SELECT ON dbo.LoginAudit TO security_auditor_login;
 DENY INSERT, UPDATE, DELETE ON dbo.LoginAudit TO security_auditor_login;
 GO
 
+-- >>> CHANGE ME: Replace the following administrator login if this script
+-- is deployed on a different SQL Server computer.
 CREATE TRIGGER trg_LogonAudit
 ON ALL SERVER
+WITH EXECUTE AS 'DESKTOP-JFIFOB9\pc'
 FOR LOGON
 AS
 BEGIN
     SET NOCOUNT ON;
-    -- Availability-first: a logging problem must not lock every user out of
-    -- SQL Server. SQL Server Audit remains the authoritative security trail.
+
+    -- Execute under the deployment administrator because ordinary developer
+    -- logins do not have INSERT permission on master.dbo.LoginAudit.
     BEGIN TRY
-        INSERT INTO master.dbo.LoginAudit(LoginName,ClientHost)
-        VALUES(ORIGINAL_LOGIN(),HOST_NAME());
+        INSERT INTO master.dbo.LoginAudit
+            (LoginName, ClientHost)
+        VALUES
+            (ORIGINAL_LOGIN(), HOST_NAME());
     END TRY
     BEGIN CATCH
+        -- An audit insertion failure must not block legitimate connections.
         RETURN;
-    END CATCH
+    END CATCH;
 END;
 GO
 
